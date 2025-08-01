@@ -16,20 +16,20 @@ jobs:
       LAMBDA_FUNCTION_NAME: dev-nc-jobs-analysis
 
     steps:
-      name: Build deployment package
-      run: |
-        rm -rf lambda_build
-        mkdir lambda_build
-        pip install -r requirements.txt -t lambda_build/
-        cp *.py lambda_build/
-        cd lambda_build
-        zip -r ../lambda_package.zip .
-        cd ..
+      - name: Build deployment package
+        run: |
+          rm -rf lambda_build
+          mkdir lambda_build
+          pip install -r requirements.txt -t lambda_build/
+          cp *.py lambda_build/
+          cd lambda_build
+          zip -r ../lambda_package.zip .
+          cd ..
 
-      name: Upload to S3
-      run: |
-        aws s3 cp lambda_package.zip s3://$S3_BUCKET/$S3_KEY
+      - name: Upload to S3
+        run: |
+          aws s3 cp lambda_package.zip s3://$S3_BUCKET/$S3_KEY
 
-      name: Update Lambda function
-      run: |
-        aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --s3-bucket $S3_BUCKET --s3-key $S3_KEY
+      - name: Update Lambda function
+        run: |
+          aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --s3-bucket $S3_BUCKET --s3-key $S3_KEY
