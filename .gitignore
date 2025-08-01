@@ -1,5 +1,5 @@
 .pytest_cache/
-
+build/
 # All __pycache__ directories
 **/__pycache__/
 *.pyc
