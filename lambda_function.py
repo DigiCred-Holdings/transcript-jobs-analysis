@@ -5,8 +5,9 @@ from openai import OpenAI
 import os
 import io
 
+s3_client = boto3.client('s3')
+
 def load_skills_dataset():
-    s3_client = boto3.client('s3')
     registry_uri = os.environ['REGISTRY_S3_URI']
     bucket, key = registry_uri.replace("s3://", "").split("/", 1)
     response = s3_client.get_object(Bucket=bucket, Key=key)
@@ -17,15 +18,13 @@ def load_skills_dataset():
     return json.loads(content)
 
 def load_embedding_dataset():
-    s3 = boto3.client('s3')
-
-    bucket_name = "embeddings"
-    file_key = "embedding_lookup.pkl"
-
-    response = s3.get_object(Bucket=bucket_name, Key=file_key)
-    file_content = response['Body'].read()
-
-    return pickle.load(io.BytesIO(file_content))
+    registry_uri = os.environ['EMBEDDING_S3_URI']
+    bucket, key = registry_uri.replace("s3://", "").split("/", 1)
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    if response['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to retrieve data from S3: {response['ResponseMetadata']['HTTPStatusCode']}")
+    content = response['Body'].read()
+    return pickle.load(io.BytesIO(bytes.fromhex(content)))
 
 def split_embeddings(ed):
     all_job_embeddings = []
@@ -335,11 +334,22 @@ def _timeit(f):
 
 @_timeit
 def lambda_handler(event, context):
+
+    if type(event["body"]) is str:
+        body = json.loads(event["body"])
+    else:
+        body = event["body"]
+    if not body:
+        return {
+            'statusCode': 400,
+            'body': json.dumps({'error': 'Invalid input: body cannot be empty.'})
+        }
+
     sd = load_skills_dataset()
     ed = load_embedding_dataset()
 
     all_job_embeddings, all_course_embeddings = split_embeddings(ed)
-    student_course_embeddings = filter_course_embeddings(all_course_embeddings, context["course_id_list"])
+    student_course_embeddings = filter_course_embeddings(all_course_embeddings, body["course_id_list"])
 
     top_k = get_top_k_jobs(all_job_embeddings, student_course_embeddings, 6)
     print(top_k)
@@ -347,16 +357,16 @@ def lambda_handler(event, context):
 
     model = "gpt-4.1-nano"
     first_com_skills, first_com_skill_groups = matching_skills(
-        context["student_skill_list"],
-        context["student_skill_groups"],
+        body["student_skill_list"],
+        body["student_skill_groups"],
         top_jobs_data[0]["skills"],
         top_jobs_data[0]["skill_groups"]
     )
     
     for i, top_job_data in enumerate(top_jobs_data):
         com_skills, com_skill_groups = matching_skills(
-            context["student_skill_list"],
-            context["student_skill_groups"],
+            body["student_skill_list"],
+            body["student_skill_groups"],
             top_jobs_data[i]["skills"],
             top_jobs_data[i]["skill_groups"]
         )
@@ -367,7 +377,7 @@ def lambda_handler(event, context):
         top_jobs_data=top_jobs_data,
         com_skills=first_com_skills,
         com_skill_groups=first_com_skill_groups,
-        summary_text=context["summary"]
+        summary_text=body["summary"]
     )
 
     llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, model, client=init_client())["jobs"]
