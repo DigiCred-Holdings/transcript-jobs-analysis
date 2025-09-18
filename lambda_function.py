@@ -1,39 +1,31 @@
 import json
 import boto3
 import pickle
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from openai import OpenAI
 import os
+import io
 
 def load_skills_dataset():
-    # s3 = boto3.client('s3')
+    s3 = boto3.client('s3')
 
-    # bucket_name = "storage"
-    # file_key = "data/sd.json"
+    bucket_name = "storage"
+    file_key = "data/sd.json"
 
-    # response = s3.get_object(Bucket=bucket_name, Key=file_key)
-    # content = response['Body'].read().decode('utf-8')
+    response = s3.get_object(Bucket=bucket_name, Key=file_key)
+    content = response['Body'].read().decode('utf-8')
 
-    # return json.loads(content)
-
-    with open(r"C:\Users\artio\OneDrive\Desktop\backbone\staging_registry.json", "r", encoding="utf-8") as file:
-        return json.load(file)
+    return json.loads(content)
 
 def load_embedding_dataset():
-    # s3 = boto3.client('s3')
+    s3 = boto3.client('s3')
 
-    # bucket_name = "embeddings"
-    # file_key = "embedding_lookup.pkl"
+    bucket_name = "embeddings"
+    file_key = "embedding_lookup.pkl"
 
-    # response = s3.get_object(Bucket=bucket_name, Key=file_key)
-    # file_content = response['Body'].read()
+    response = s3.get_object(Bucket=bucket_name, Key=file_key)
+    file_content = response['Body'].read()
 
-    # return pickle.load(io.BytesIO(file_content))
-
-    with open(r"C:\Users\artio\OneDrive\Desktop\backbone\embedding_lookup.pkl" , "rb") as f:
-        all_entries = pickle.load(f)
-    return all_entries
+    return pickle.load(io.BytesIO(file_content))
 
 def split_embeddings(ed):
     all_job_embeddings = []
@@ -55,20 +47,21 @@ def filter_course_embeddings(course_embeddings, course_ids):
     return valid_courses
 
 def get_top_k_jobs(all_job_embeddings, student_course_embeddings, k=5):
-    job_ids = [job[0] for job in all_job_embeddings]
-    job_vecs = np.array([np.array(job[2], dtype=float) for job in all_job_embeddings])
-    course_vecs = np.array([np.array(course[2], dtype=float) for course in student_course_embeddings])
+    # job_ids = [job[0] for job in all_job_embeddings]
+    # job_vecs = np.array([np.array(job[2], dtype=float) for job in all_job_embeddings])
+    # course_vecs = np.array([np.array(course[2], dtype=float) for course in student_course_embeddings])
 
-    if job_vecs.ndim == 1:
-        job_vecs = job_vecs.reshape(1, -1)
-    if course_vecs.ndim == 1:
-        course_vecs = course_vecs.reshape(1, -1)
+    # if job_vecs.ndim == 1:
+    #     job_vecs = job_vecs.reshape(1, -1)
+    # if course_vecs.ndim == 1:
+    #     course_vecs = course_vecs.reshape(1, -1)
 
-    sim_matrix = cosine_similarity(course_vecs, job_vecs)
-    mean_sim_per_job = sim_matrix.mean(axis=0)
+    # sim_matrix = cosine_similarity(course_vecs, job_vecs)
+    # mean_sim_per_job = sim_matrix.mean(axis=0)
 
-    top_k_idx = np.argsort(mean_sim_per_job)[::-1][:k]
-    return [(job_ids[i], float(mean_sim_per_job[i])) for i in top_k_idx]
+    # top_k_idx = np.argsort(mean_sim_per_job)[::-1][:k]
+    # return [(job_ids[i], float(mean_sim_per_job[i])) for i in top_k_idx]
+    return []
 
 def retrieve_job_data(top_ids, sd):
     jobs_data = []
