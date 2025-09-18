@@ -6,12 +6,12 @@ import os
 import io
 
 def load_skills_dataset():
-    s3 = boto3.client('s3')
-
-    bucket_name = "storage"
-    file_key = "data/sd.json"
-
-    response = s3.get_object(Bucket=bucket_name, Key=file_key)
+    s3_client = boto3.client('s3')
+    registry_uri = os.environ['REGISTRY_S3_URI']
+    bucket, key = registry_uri.replace("s3://", "").split("/", 1)
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    if response['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to retrieve data from S3: {response['ResponseMetadata']['HTTPStatusCode']}")
     content = response['Body'].read().decode('utf-8')
 
     return json.loads(content)
