@@ -24,7 +24,7 @@ def load_embedding_dataset():
     if response['ResponseMetadata']['HTTPStatusCode'] != 200:
         raise Exception(f"Failed to retrieve data from S3: {response['ResponseMetadata']['HTTPStatusCode']}")
     content = response['Body'].read()
-    return pickle.load(io.BytesIO(bytes.fromhex(content)))
+    return pickle.load(io.BytesIO(content))
 
 def split_embeddings(ed):
     all_job_embeddings = []
