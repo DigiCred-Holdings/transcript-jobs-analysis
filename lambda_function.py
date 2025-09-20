@@ -353,13 +353,8 @@ def lambda_handler(event, context):
             'status': 400,
             'body': 'Missing body in request'
         }
-    try:
-        body = json.loads(event["body"])
-    except json.JSONDecodeError:
-        return {
-            'status': 400,
-            'body': 'Invalid JSON in body'
-        }
+        
+    body = event["body"]
     
 
     # Load skills dataset from S3
