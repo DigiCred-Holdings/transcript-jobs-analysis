@@ -7,9 +7,8 @@ import io
 
 s3_client = boto3.client('s3')
 
-def load_skills_dataset():
-    registry_uri = os.environ['REGISTRY_S3_URI']
-    bucket, key = registry_uri.replace("s3://", "").split("/", 1)
+def load_json_from_s3(s3_uri):
+    bucket, key = s3_uri.replace("s3://", "").split("/", 1)
     response = s3_client.get_object(Bucket=bucket, Key=key)
     if response['ResponseMetadata']['HTTPStatusCode'] != 200:
         raise Exception(f"Failed to retrieve data from S3: {response['ResponseMetadata']['HTTPStatusCode']}")
@@ -17,14 +16,6 @@ def load_skills_dataset():
 
     return json.loads(content)
 
-def load_embedding_dataset():
-    registry_uri = os.environ['EMBEDDING_S3_URI']
-    bucket, key = registry_uri.replace("s3://", "").split("/", 1)
-    response = s3_client.get_object(Bucket=bucket, Key=key)
-    if response['ResponseMetadata']['HTTPStatusCode'] != 200:
-        raise Exception(f"Failed to retrieve data from S3: {response['ResponseMetadata']['HTTPStatusCode']}")
-    content = response['Body'].read()
-    return pickle.load(io.BytesIO(content))
 
 def split_embeddings(ed):
     all_job_embeddings = []
@@ -322,7 +313,28 @@ def get_prompt_plus_schema(top_jobs_data, com_skills, com_skill_groups, summary_
     ]
     return messages, _JSON_SCHEMA_WRAPPER
 
+def course_codes_match(code1, code2):
+    return str.lower(code1.strip()) == str.lower(code2.strip())
 
+def standardize_courses(courses_list, source, sd):
+    # Find the source abbreviation in the skills dataset
+    for code, alts in sd["lookup"]["universities"].items():
+        if str.lower(source) in [str.lower(alt) for alt in alts]:
+            src_code = code
+            break
+    
+    # Filter the courses based on the source code
+    all_courses = [course for course in sd["C"] if course["data"]["src"] == src_code]
+    matches = []
+    for course in courses_list:
+        # Use the second element in the course list element as the course code
+        course_code = str.lower(course[1])
+        code_matches = [course for course in all_courses if course_codes_match(course["data"]["code"], course_code)]
+        if code_matches:
+            # If a match is found, return the course ID
+            matches.append(code_matches[0]["id"])
+        
+    return matches
 
 from time import perf_counter
 def _timeit(f):
@@ -335,78 +347,88 @@ def _timeit(f):
 @_timeit
 def lambda_handler(event, context):
 
-    if type(event["body"]) is str:
-        body = json.loads(event["body"])
-    else:
-        body = event["body"]
-    if not body:
+    # Input validation, check if body is present
+    if "body" not in event or not event["body"]:
         return {
-            'statusCode': 400,
-            'body': json.dumps({'error': 'Invalid input: body cannot be empty.'})
+            'status': 400,
+            'body': 'Missing body in request'
         }
-
-    sd = load_skills_dataset()
-    ed = load_embedding_dataset()
-
-    all_job_embeddings, all_course_embeddings = split_embeddings(ed)
-    student_course_embeddings = filter_course_embeddings(all_course_embeddings, body["course_id_list"])
-
-    top_k = get_top_k_jobs(all_job_embeddings, student_course_embeddings, 6)
-    print(top_k)
-    top_jobs_data = retrieve_job_data([job[0] for job in top_k], sd)    
-
-    model = "gpt-4.1-nano"
-    first_com_skills, first_com_skill_groups = matching_skills(
-        body["student_skill_list"],
-        body["student_skill_groups"],
-        top_jobs_data[0]["skills"],
-        top_jobs_data[0]["skill_groups"]
-    )
+    try:
+        body = json.loads(event["body"])
+    except json.JSONDecodeError:
+        return {
+            'status': 400,
+            'body': 'Invalid JSON in body'
+        }
     
-    for i, top_job_data in enumerate(top_jobs_data):
-        com_skills, com_skill_groups = matching_skills(
-            body["student_skill_list"],
-            body["student_skill_groups"],
-            top_jobs_data[i]["skills"],
-            top_jobs_data[i]["skill_groups"]
-        )
-        top_job_data["common_skills"] = com_skills
-        top_job_data["common_skill_groups"] = com_skill_groups
 
-    messages, json_schema_wrapper = get_prompt_plus_schema(
-        top_jobs_data=top_jobs_data,
-        com_skills=first_com_skills,
-        com_skill_groups=first_com_skill_groups,
-        summary_text=body["summary"]
-    )
+    # Load skills dataset from S3
+    skills_dataset = load_json_from_s3(os.environ['REGISTRY_S3_URI'])
+    standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
 
-    llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, model, client=init_client())["jobs"]
+    print("Standardized course IDs:", standardized_course_ids)
 
-    jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
-    jobs_sorted = sorted(jobs, key=lambda j: j["compatibility_score_10"], reverse=True)
+    # sd = load_skills_dataset()
+    # ed = load_embedding_dataset()
 
-    if isinstance(llm_result, dict):
-        llm_result["jobs"] = jobs_sorted
-    else:
-        llm_result = jobs_sorted
+    # all_job_embeddings, all_course_embeddings = split_embeddings(ed)
 
-    for job in llm_result:
-        for data_job in top_jobs_data:
-            if data_job["id"] == job["id"]:
-                job["url"] = data_job["url"]
-                job["job_analysis"] = {
-                        k: v for k, v in data_job["job_analysis"].items()
-                        if k != "expertise_ranking_justification"
-                    }
-                job["skills"] = data_job["skills"]
-                job["skill_groups"] = data_job["skill_groups"]
-                job["common_skills"] = data_job["common_skills"]
-                job["common_skill_groups"] = data_job["common_skill_groups"]
+    # top_k = get_top_k_jobs(all_job_embeddings, student_course_embeddings, 6)
+    # print(top_k)
+    # top_jobs_data = retrieve_job_data([job[0] for job in top_k], sd)    
+
+    # model = "gpt-4.1-nano"
+    # first_com_skills, first_com_skill_groups = matching_skills(
+    #     body["student_skill_list"],
+    #     body["student_skill_groups"],
+    #     top_jobs_data[0]["skills"],
+    #     top_jobs_data[0]["skill_groups"]
+    # )
+    
+    # for i, top_job_data in enumerate(top_jobs_data):
+    #     com_skills, com_skill_groups = matching_skills(
+    #         body["student_skill_list"],
+    #         body["student_skill_groups"],
+    #         top_jobs_data[i]["skills"],
+    #         top_jobs_data[i]["skill_groups"]
+    #     )
+    #     top_job_data["common_skills"] = com_skills
+    #     top_job_data["common_skill_groups"] = com_skill_groups
+
+    # messages, json_schema_wrapper = get_prompt_plus_schema(
+    #     top_jobs_data=top_jobs_data,
+    #     com_skills=first_com_skills,
+    #     com_skill_groups=first_com_skill_groups,
+    #     summary_text=body["summary"]
+    # )
+
+    # llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, model, client=init_client())["jobs"]
+
+    # jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
+    # jobs_sorted = sorted(jobs, key=lambda j: j["compatibility_score_10"], reverse=True)
+
+    # if isinstance(llm_result, dict):
+    #     llm_result["jobs"] = jobs_sorted
+    # else:
+    #     llm_result = jobs_sorted
+
+    # for job in llm_result:
+    #     for data_job in top_jobs_data:
+    #         if data_job["id"] == job["id"]:
+    #             job["url"] = data_job["url"]
+    #             job["job_analysis"] = {
+    #                     k: v for k, v in data_job["job_analysis"].items()
+    #                     if k != "expertise_ranking_justification"
+    #                 }
+    #             job["skills"] = data_job["skills"]
+    #             job["skill_groups"] = data_job["skill_groups"]
+    #             job["common_skills"] = data_job["common_skills"]
+    #             job["common_skill_groups"] = data_job["common_skill_groups"]
     
     return {
         'status': 200,
         'body': {
-            "job_matches": llm_result,
+            "job_matches": "",
         }
     }
 
