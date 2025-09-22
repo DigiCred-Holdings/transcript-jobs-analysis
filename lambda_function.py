@@ -6,6 +6,7 @@ import os
 import io
 
 s3_client = boto3.client('s3')
+s3vectors_client = boto3.client('s3vectors')
 
 def load_json_from_s3(s3_uri):
     bucket, key = s3_uri.replace("s3://", "").split("/", 1)
@@ -15,6 +16,14 @@ def load_json_from_s3(s3_uri):
     content = response['Body'].read().decode('utf-8')
 
     return json.loads(content)
+
+def load_embeddings(index_arn, course_ids):
+    vectors = s3vectors_client.get_vectors(
+        indexArn=index_arn,
+        keys=course_ids
+    )
+    print(vectors)
+    return vectors['vectors']
 
 
 def split_embeddings(ed):
@@ -360,6 +369,9 @@ def lambda_handler(event, context):
     # Load skills dataset from S3
     skills_dataset = load_json_from_s3(os.environ['REGISTRY_S3_URI'])
     standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
+
+    # Load vector embeddings from S3vectors using course_ids
+    embedding_dataset = load_embeddings(os.environ['S3VECTORS_INDEX_ARN'], standardized_course_ids)
 
     print("Standardized course IDs:", standardized_course_ids)
 
