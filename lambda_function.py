@@ -1,9 +1,8 @@
 import json
 import boto3
-import pickle
+import numpy as np
 from openai import OpenAI
 import os
-import io
 
 s3_client = boto3.client('s3')
 s3vectors_client = boto3.client('s3vectors')
@@ -17,33 +16,21 @@ def load_json_from_s3(s3_uri):
 
     return json.loads(content)
 
-def load_embeddings(index_arn, course_ids):
-    vectors = s3vectors_client.get_vectors(
-        indexArn=index_arn,
-        keys=course_ids
-    )
-    print(vectors)
+def load_embeddings(index_arn, vector_keys):
+    try:
+        vectors = s3vectors_client.get_vectors(
+            indexArn=index_arn,
+            keys=vector_keys,
+            returnData=True
+        )
+    except Exception as e:
+        raise Exception(f"Error retrieving embeddings from S3Vectors: {str(e)}")
+    
+    if vectors['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to retrieve embeddings from S3Vectors: {vectors['ResponseMetadata']['HTTPStatusCode']}")
+    
     return vectors['vectors']
 
-
-def split_embeddings(ed):
-    all_job_embeddings = []
-    all_course_embeddings = []
-    for job in ed:
-        if job[0][0] == "J":
-            all_job_embeddings.append(job)
-        elif job[0][0] == "C":
-            all_course_embeddings.append(job)
-
-    return all_job_embeddings, all_course_embeddings
-
-def filter_course_embeddings(course_embeddings, course_ids):
-    valid_courses = []
-    for course in course_embeddings:
-        if course[0] in course_ids:
-            valid_courses.append(course)
-    
-    return valid_courses
 
 def get_top_k_jobs(all_job_embeddings, student_course_embeddings, k=5):
     # job_ids = [job[0] for job in all_job_embeddings]
@@ -371,9 +358,14 @@ def lambda_handler(event, context):
     standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
 
     # Load vector embeddings from S3vectors using course_ids
-    embedding_dataset = load_embeddings(os.environ['S3VECTORS_INDEX_ARN'], standardized_course_ids)
+    course_embeddings = load_embeddings(os.environ['S3VECTORS_INDEX_ARN'], standardized_course_ids)
+    # Calculate the average vector for the course embeddings
 
-    print("Standardized course IDs:", standardized_course_ids)
+    print("Course embeddings loaded:", len(course_embeddings))
+    transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
+    
+    print("Transcript mean vector calculated.", transcript_mean_vector.shape, transcript_mean_vector[:5])
+    # Query top k jobs based on the average course embedding
 
     # sd = load_skills_dataset()
     # ed = load_embedding_dataset()
