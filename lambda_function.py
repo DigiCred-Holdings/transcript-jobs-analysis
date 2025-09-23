@@ -345,7 +345,6 @@ def lambda_handler(event, context):
     print("Course embeddings loaded:", len(course_embeddings))
     transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
     
-
     # Query top k jobs based on the average course embedding
     top_k_jobs = s3vectors_client.query_vectors(
         indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
@@ -359,69 +358,64 @@ def lambda_handler(event, context):
         raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
 
     print("Top K jobs retrieved:", len(top_k_jobs['vectors']))
+    print(f"Top k job ids {[top['key'] for top in top_k_jobs['vectors']]}")
 
-    # top_k = get_top_k_jobs(all_job_embeddings, student_course_embeddings, 6)
-    # print(top_k)
-    top_jobs_data = retrieve_job_data([job["key"] for job in top_k_jobs["vectors"]], skills_dataset)   
-    # Print a table with headers and the job id, title, and distance
-    print(f"{'Job ID':<10} {'Title':<50} {'Distance':<10}")
-    for job in top_k_jobs["vectors"]:
-        job_data = next((j for j in top_jobs_data if j["id"] == job["key"]), None)
-        if job_data:
-            print(f"{job['key']:<10} {job_data['title'][:50]:<50} {job['distance']:<10.4f}") 
+    # Retrieve job data for the top k jobs
+    top_jobs_data = retrieve_job_data([job["key"] for job in top_k_jobs["vectors"]], skills_dataset)
+    print("Top jobs data retrieved:", top_jobs_data)
 
-    # model = "gpt-4.1-nano"
-    # first_com_skills, first_com_skill_groups = matching_skills(
-    #     body["student_skill_list"],
-    #     body["student_skill_groups"],
-    #     top_jobs_data[0]["skills"],
-    #     top_jobs_data[0]["skill_groups"]
-    # )
+    model = "gpt-4.1-nano"
+    first_com_skills, first_com_skill_groups = matching_skills(
+        body["student_skill_list"],
+        body["student_skill_groups"],
+        top_jobs_data[0]["skills"],
+        top_jobs_data[0]["skill_groups"]
+    )
     
-    # for i, top_job_data in enumerate(top_jobs_data):
-    #     com_skills, com_skill_groups = matching_skills(
-    #         body["student_skill_list"],
-    #         body["student_skill_groups"],
-    #         top_jobs_data[i]["skills"],
-    #         top_jobs_data[i]["skill_groups"]
-    #     )
-    #     top_job_data["common_skills"] = com_skills
-    #     top_job_data["common_skill_groups"] = com_skill_groups
+    for i, top_job_data in enumerate(top_jobs_data):
+        com_skills, com_skill_groups = matching_skills(
+            body["student_skill_list"],
+            body["student_skill_groups"],
+            top_jobs_data[i]["skills"],
+            top_jobs_data[i]["skill_groups"]
+        )
+        top_job_data["common_skills"] = com_skills
+        top_job_data["common_skill_groups"] = com_skill_groups
 
-    # messages, json_schema_wrapper = get_prompt_plus_schema(
-    #     top_jobs_data=top_jobs_data,
-    #     com_skills=first_com_skills,
-    #     com_skill_groups=first_com_skill_groups,
-    #     summary_text=body["summary"]
-    # )
+    messages, json_schema_wrapper = get_prompt_plus_schema(
+        top_jobs_data=top_jobs_data,
+        com_skills=first_com_skills,
+        com_skill_groups=first_com_skill_groups,
+        summary_text=body["summary"]
+    )
 
-    # llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, model, client=init_client())["jobs"]
+    llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, model, client=init_client())["jobs"]
 
-    # jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
-    # jobs_sorted = sorted(jobs, key=lambda j: j["compatibility_score_10"], reverse=True)
+    jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
+    jobs_sorted = sorted(jobs, key=lambda j: j["compatibility_score_10"], reverse=True)
 
-    # if isinstance(llm_result, dict):
-    #     llm_result["jobs"] = jobs_sorted
-    # else:
-    #     llm_result = jobs_sorted
+    if isinstance(llm_result, dict):
+        llm_result["jobs"] = jobs_sorted
+    else:
+        llm_result = jobs_sorted
 
-    # for job in llm_result:
-    #     for data_job in top_jobs_data:
-    #         if data_job["id"] == job["id"]:
-    #             job["url"] = data_job["url"]
-    #             job["job_analysis"] = {
-    #                     k: v for k, v in data_job["job_analysis"].items()
-    #                     if k != "expertise_ranking_justification"
-    #                 }
-    #             job["skills"] = data_job["skills"]
-    #             job["skill_groups"] = data_job["skill_groups"]
-    #             job["common_skills"] = data_job["common_skills"]
-    #             job["common_skill_groups"] = data_job["common_skill_groups"]
+    for job in llm_result:
+        for data_job in top_jobs_data:
+            if data_job["id"] == job["id"]:
+                job["url"] = data_job["url"]
+                job["job_analysis"] = {
+                        k: v for k, v in data_job["job_analysis"].items()
+                        if k != "expertise_ranking_justification"
+                    }
+                job["skills"] = data_job["skills"]
+                job["skill_groups"] = data_job["skill_groups"]
+                job["common_skills"] = data_job["common_skills"]
+                job["common_skill_groups"] = data_job["common_skill_groups"]
     
     return {
         'status': 200,
         'body': {
-            "job_matches": "",
+            "job_matches": llm_result,
         }
     }
 
