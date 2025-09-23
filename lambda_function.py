@@ -31,24 +31,6 @@ def load_embeddings(index_arn, vector_keys):
     
     return vectors['vectors']
 
-
-def get_top_k_jobs(all_job_embeddings, student_course_embeddings, k=5):
-    # job_ids = [job[0] for job in all_job_embeddings]
-    # job_vecs = np.array([np.array(job[2], dtype=float) for job in all_job_embeddings])
-    # course_vecs = np.array([np.array(course[2], dtype=float) for course in student_course_embeddings])
-
-    # if job_vecs.ndim == 1:
-    #     job_vecs = job_vecs.reshape(1, -1)
-    # if course_vecs.ndim == 1:
-    #     course_vecs = course_vecs.reshape(1, -1)
-
-    # sim_matrix = cosine_similarity(course_vecs, job_vecs)
-    # mean_sim_per_job = sim_matrix.mean(axis=0)
-
-    # top_k_idx = np.argsort(mean_sim_per_job)[::-1][:k]
-    # return [(job_ids[i], float(mean_sim_per_job[i])) for i in top_k_idx]
-    return []
-
 def retrieve_job_data(top_ids, sd):
     jobs_data = []
     for job in sd["J"]:
@@ -351,30 +333,42 @@ def lambda_handler(event, context):
         }
         
     body = event["body"]
-    
 
     # Load skills dataset from S3
     skills_dataset = load_json_from_s3(os.environ['REGISTRY_S3_URI'])
     standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
 
     # Load vector embeddings from S3vectors using course_ids
-    course_embeddings = load_embeddings(os.environ['S3VECTORS_INDEX_ARN'], standardized_course_ids)
+    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], standardized_course_ids)
     # Calculate the average vector for the course embeddings
 
     print("Course embeddings loaded:", len(course_embeddings))
     transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
     
-    print("Transcript mean vector calculated.", transcript_mean_vector.shape, transcript_mean_vector[:5])
+
     # Query top k jobs based on the average course embedding
+    top_k_jobs = s3vectors_client.query_vectors(
+        indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
+        topK=10,
+        queryVector= {
+            "float32": transcript_mean_vector.astype(np.float32).tolist()
+        },
+        returnDistance=True
+    )
+    if top_k_jobs['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
 
-    # sd = load_skills_dataset()
-    # ed = load_embedding_dataset()
-
-    # all_job_embeddings, all_course_embeddings = split_embeddings(ed)
+    print("Top K jobs retrieved:", len(top_k_jobs['vectors']))
 
     # top_k = get_top_k_jobs(all_job_embeddings, student_course_embeddings, 6)
     # print(top_k)
-    # top_jobs_data = retrieve_job_data([job[0] for job in top_k], sd)    
+    top_jobs_data = retrieve_job_data([job["key"] for job in top_k_jobs["vectors"]], skills_dataset)   
+    # Print a table with headers and the job id, title, and distance
+    print(f"{'Job ID':<10} {'Title':<50} {'Distance':<10}")
+    for job in top_k_jobs["vectors"]:
+        job_data = next((j for j in top_jobs_data if j["id"] == job["key"]), None)
+        if job_data:
+            print(f"{job['key']:<10} {job_data['title'][:50]:<50} {job['distance']:<10.4f}") 
 
     # model = "gpt-4.1-nano"
     # first_com_skills, first_com_skill_groups = matching_skills(
