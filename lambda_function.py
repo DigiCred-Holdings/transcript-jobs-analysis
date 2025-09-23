@@ -357,7 +357,7 @@ def lambda_handler(event, context):
     if top_k_jobs['ResponseMetadata']['HTTPStatusCode'] != 200:
         raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
 
-    print("Top K jobs retrieved:", len(top_k_jobs['vectors']))
+    print("Top K jobs retrieved:", top_k_jobs)
     print(f"Top k job ids {[top['key'] for top in top_k_jobs['vectors']]}")
 
     # Retrieve job data for the top k jobs
