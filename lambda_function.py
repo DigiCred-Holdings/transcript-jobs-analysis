@@ -31,21 +31,22 @@ def load_embeddings(index_arn, vector_keys):
     
     return vectors['vectors']
 
-def retrieve_job_data(top_ids, sd):
+def retrieve_job_data(top_jobs, sd):
     jobs_data = []
-    for job in sd["J"]:
-        if job["id"] in top_ids:
+    # Find the job with matching id/key in the skills dataset
+    for job in top_jobs:
+        job_data = next((j for j in sd["J"] if j["id"] == job["key"]), None)
+        if job_data:
             jobs_data.append({
-                "id": job["id"],
-                "title": job["data"]["title"],
-                "url": job["data"]["url"],
-                "salary": job["data"]["salary"],
-                "job_analysis": job["josa"]["analysis"],
-                "skills": job["dse"]["skills"],
-                "skill_groups": job["dse"]["skill_groups"][0][0]
-                
+                "id": job_data["id"],
+                "distance": job.get("distance"),
+                "title": job_data["data"].get("title"),
+                "url": job_data["data"].get("url"),
+                "salary": job_data["data"].get("salary"),
+                "job_analysis": job_data.get("josa").get("analysis"),
+                "skills": job_data.get("dse").get("skills"),
+                "skill_groups": job_data.get("dse").get("skill_groups")[0][0]
             })
-
     return jobs_data
 
 def matching_skills(student_skills, student_skill_groups, job_skills, job_skill_groups):
@@ -357,12 +358,15 @@ def lambda_handler(event, context):
     if top_k_jobs['ResponseMetadata']['HTTPStatusCode'] != 200:
         raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
 
-    print("Top K jobs retrieved:", top_k_jobs)
-    print(f"Top k job ids {[top['key'] for top in top_k_jobs['vectors']]}")
+    print("Top K jobs retrieved:", top_k_jobs["vectors"])
 
     # Retrieve job data for the top k jobs
-    top_jobs_data = retrieve_job_data([job["key"] for job in top_k_jobs["vectors"]], skills_dataset)
-    print("Top jobs data retrieved:", top_jobs_data)
+    top_jobs_data = retrieve_job_data(top_k_jobs["vectors"], skills_dataset)
+
+    # Print the top job Ids in the dataset, as well as their distances
+    print("Top job IDs and distances after skills parse:")
+    for job in top_jobs_data:
+        print(f"Job ID: {job['id']}, Distance: {job['distance']}")
 
     model = "gpt-4.1-nano"
     first_com_skills, first_com_skill_groups = matching_skills(
@@ -418,7 +422,3 @@ def lambda_handler(event, context):
             "job_matches": llm_result,
         }
     }
-
-
-
-
