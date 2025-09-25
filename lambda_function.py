@@ -60,10 +60,12 @@ def matching_skills(student_skills, student_skill_groups, job_skills, job_skill_
 ### OPENAI API RELATED ###
 
 def init_client():
-    base_dir = os.path.dirname(__file__) 
-    parent_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    key_path = os.path.join(parent_dir, "OPENAI_KEY.txt")
-    return OpenAI(api_key=open(key_path).read().strip())
+    # Get OpenAI key from aws secrets manager and return OpenAI client
+    secrets_client = boto3.client('secretsmanager')
+    secret_response = secrets_client.get_secret_value(SecretId=os.environ['OPENAI_API_KEY_SECRET'])
+    secret_string = secret_response['SecretString']
+    api_key = json.loads(secret_string).get('OPENAI_API_KEY')
+    return OpenAI(api_key=api_key)
 
 def chatgpt_send_messages_json(messages, json_schema_wrapper, model, client, service_tier="standard"):
     json_response = client.chat.completions.create(
