@@ -338,12 +338,14 @@ def lambda_handler(event, context):
     # Load skills dataset from S3
     skills_dataset = load_json_from_s3(os.environ['REGISTRY_S3_URI'])
     standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
-    # Load vector embeddings from S3vectors using course_ids
-    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], standardized_course_ids)
 
     print("Course load summary:")
     print("Input courses:", len(body["coursesList"]))
     print("Standardized courses:", len(standardized_course_ids))
+
+    # Load vector embeddings from S3vectors using course_ids
+    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], standardized_course_ids)
+
     print("Course embeddings:", len(course_embeddings))
 
     # Calculate the average vector for the course embeddings
