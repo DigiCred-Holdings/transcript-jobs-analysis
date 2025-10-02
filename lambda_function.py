@@ -334,8 +334,10 @@ def lambda_handler(event, context):
             'status': 400,
             'body': 'Missing body in request'
         }
-        
-    body = event["body"]
+    elif type(event["body"]) is str:
+        body = json.loads(event["body"])
+    else:
+        body = event["body"]
 
     print("Course load summary:")
     print("Input courses:", len(body["coursesList"]))
