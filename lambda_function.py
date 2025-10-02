@@ -432,8 +432,8 @@ def lambda_handler(event, context):
                 job["common_skill_groups"] = data_job["common_skill_groups"]
     
     highlight = "\n".join([
-        f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}"
-        for job_match in llm_result]
+        f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}\n"
+        for job_match in llm_result[:3]]
     )
 
 
