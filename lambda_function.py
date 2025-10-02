@@ -337,12 +337,13 @@ def lambda_handler(event, context):
         
     body = event["body"]
 
+    print("Course load summary:")
+    print("Input courses:", len(body["coursesList"]))
+    print("Input source: ", body["source"])
+
     # Load skills dataset from S3
     skills_dataset = load_json_from_s3(os.environ['REGISTRY_S3_URI'])
     standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
-
-    print("Course load summary:")
-    print("Input courses:", len(body["coursesList"]))
     print("Standardized courses:", len(standardized_course_ids))
 
     # Load vector embeddings from S3vectors using course_ids
