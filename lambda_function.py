@@ -351,11 +351,14 @@ def lambda_handler(event, context):
     # Load vector embeddings from S3vectors using course_ids
     course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], standardized_course_ids)
 
+    if not course_embeddings:
+        return {
+            "status": 404,
+            "body": "Embeddings not found for any courses"
+        }
     print("Course embeddings:", len(course_embeddings))
 
     # Calculate the average vector for the course embeddings
-
-    print("Course embeddings loaded:", len(course_embeddings))
     transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
     
     # Query top k jobs based on the average course embedding
