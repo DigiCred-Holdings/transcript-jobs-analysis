@@ -1,90 +1,52 @@
 import json
 import boto3
-import pickle
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from openai import OpenAI
 import os
 
-def load_skills_dataset():
-    # s3 = boto3.client('s3')
+s3_client = boto3.client('s3')
+s3vectors_client = boto3.client('s3vectors')
 
-    # bucket_name = "storage"
-    # file_key = "data/sd.json"
+def load_json_from_s3(s3_uri):
+    bucket, key = s3_uri.replace("s3://", "").split("/", 1)
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    if response['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to retrieve data from S3: {response['ResponseMetadata']['HTTPStatusCode']}")
+    content = response['Body'].read().decode('utf-8')
 
-    # response = s3.get_object(Bucket=bucket_name, Key=file_key)
-    # content = response['Body'].read().decode('utf-8')
+    return json.loads(content)
 
-    # return json.loads(content)
-
-    with open(r"C:\Users\artio\OneDrive\Desktop\backbone\staging_registry.json", "r", encoding="utf-8") as file:
-        return json.load(file)
-
-def load_embedding_dataset():
-    # s3 = boto3.client('s3')
-
-    # bucket_name = "embeddings"
-    # file_key = "embedding_lookup.pkl"
-
-    # response = s3.get_object(Bucket=bucket_name, Key=file_key)
-    # file_content = response['Body'].read()
-
-    # return pickle.load(io.BytesIO(file_content))
-
-    with open(r"C:\Users\artio\OneDrive\Desktop\backbone\embedding_lookup.pkl" , "rb") as f:
-        all_entries = pickle.load(f)
-    return all_entries
-
-def split_embeddings(ed):
-    all_job_embeddings = []
-    all_course_embeddings = []
-    for job in ed:
-        if job[0][0] == "J":
-            all_job_embeddings.append(job)
-        elif job[0][0] == "C":
-            all_course_embeddings.append(job)
-
-    return all_job_embeddings, all_course_embeddings
-
-def filter_course_embeddings(course_embeddings, course_ids):
-    valid_courses = []
-    for course in course_embeddings:
-        if course[0] in course_ids:
-            valid_courses.append(course)
+def load_embeddings(index_arn, vector_keys):
+    try:
+        vectors = s3vectors_client.get_vectors(
+            indexArn=index_arn,
+            keys=vector_keys,
+            returnData=True
+        )
+    except Exception as e:
+        raise Exception(f"Error retrieving embeddings from S3Vectors: {str(e)}")
     
-    return valid_courses
+    if vectors['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to retrieve embeddings from S3Vectors: {vectors['ResponseMetadata']['HTTPStatusCode']}")
+    
+    return vectors['vectors']
 
-def get_top_k_jobs(all_job_embeddings, student_course_embeddings, k=5):
-    job_ids = [job[0] for job in all_job_embeddings]
-    job_vecs = np.array([np.array(job[2], dtype=float) for job in all_job_embeddings])
-    course_vecs = np.array([np.array(course[2], dtype=float) for course in student_course_embeddings])
-
-    if job_vecs.ndim == 1:
-        job_vecs = job_vecs.reshape(1, -1)
-    if course_vecs.ndim == 1:
-        course_vecs = course_vecs.reshape(1, -1)
-
-    sim_matrix = cosine_similarity(course_vecs, job_vecs)
-    mean_sim_per_job = sim_matrix.mean(axis=0)
-
-    top_k_idx = np.argsort(mean_sim_per_job)[::-1][:k]
-    return [(job_ids[i], float(mean_sim_per_job[i])) for i in top_k_idx]
-
-def retrieve_job_data(top_ids, sd):
+def retrieve_job_data(top_jobs, sd):
     jobs_data = []
-    for job in sd["J"]:
-        if job["id"] in top_ids:
+    # Find the job with matching id/key in the skills dataset
+    for job in top_jobs:
+        job_data = next((j for j in sd["J"] if j["id"] == job["key"]), None)
+        if job_data:
             jobs_data.append({
-                "id": job["id"],
-                "title": job["data"]["title"],
-                "url": job["data"]["url"],
-                "salary": job["data"]["salary"],
-                "job_analysis": job["josa"]["analysis"],
-                "skills": job["dse"]["skills"],
-                "skill_groups": job["dse"]["skill_groups"][0][0]
-                
+                "id": job_data["id"],
+                "distance": job.get("distance"),
+                "title": job_data["data"].get("title"),
+                "url": job_data["data"].get("url"),
+                "salary": job_data["data"].get("salary"),
+                "job_analysis": job_data.get("josa").get("analysis"),
+                "skills": job_data.get("dse").get("skills"),
+                "skill_groups": job_data.get("dse").get("skill_groups")[0][0]
             })
-
     return jobs_data
 
 def matching_skills(student_skills, student_skill_groups, job_skills, job_skill_groups):
@@ -98,10 +60,12 @@ def matching_skills(student_skills, student_skill_groups, job_skills, job_skill_
 ### OPENAI API RELATED ###
 
 def init_client():
-    base_dir = os.path.dirname(__file__) 
-    parent_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    key_path = os.path.join(parent_dir, "OPENAI_KEY.txt")
-    return OpenAI(api_key=open(key_path).read().strip())
+    # Get OpenAI key from aws secrets manager and return OpenAI client
+    secrets_client = boto3.client('secretsmanager')
+    secret_response = secrets_client.get_secret_value(SecretId=os.environ['OPENAI_API_KEY_SECRET'])
+    secret_string = secret_response['SecretString']
+    api_key = json.loads(secret_string).get('OPENAI_API_KEY')
+    return OpenAI(api_key=api_key)
 
 def chatgpt_send_messages_json(messages, json_schema_wrapper, model, client, service_tier="standard"):
     json_response = client.chat.completions.create(
@@ -330,7 +294,28 @@ def get_prompt_plus_schema(top_jobs_data, com_skills, com_skill_groups, summary_
     ]
     return messages, _JSON_SCHEMA_WRAPPER
 
+def course_codes_match(code1, code2):
+    return str.lower(code1.strip()) == str.lower(code2.strip())
 
+def standardize_courses(courses_list, source, sd):
+    # Find the source abbreviation in the skills dataset
+    for code, alts in sd["lookup"]["universities"].items():
+        if str.lower(source) in [str.lower(alt) for alt in alts]:
+            src_code = code
+            break
+    
+    # Filter the courses based on the source code
+    all_courses = [course for course in sd["C"] if course["data"]["src"] == src_code]
+    matches = []
+    for course in courses_list:
+        # Use the second element in the course list element as the course code
+        course_code = str.lower(course[1])
+        code_matches = [course for course in all_courses if course_codes_match(course["data"]["code"], course_code)]
+        if code_matches:
+            # If a match is found, return the course ID
+            matches.append(code_matches[0]["id"])
+        
+    return matches
 
 from time import perf_counter
 def _timeit(f):
@@ -342,28 +327,74 @@ def _timeit(f):
 
 @_timeit
 def lambda_handler(event, context):
-    sd = load_skills_dataset()
-    ed = load_embedding_dataset()
 
-    all_job_embeddings, all_course_embeddings = split_embeddings(ed)
-    student_course_embeddings = filter_course_embeddings(all_course_embeddings, context["course_id_list"])
+    # Input validation, check if body is present
+    if "body" not in event or not event["body"]:
+        return {
+            'status': 400,
+            'body': 'Missing body in request'
+        }
+    elif type(event["body"]) is str:
+        body = json.loads(event["body"])
+    else:
+        body = event["body"]
 
-    top_k = get_top_k_jobs(all_job_embeddings, student_course_embeddings, 6)
-    print(top_k)
-    top_jobs_data = retrieve_job_data([job[0] for job in top_k], sd)    
+    print("Course load summary:")
+    print("Input courses:", len(body["coursesList"]))
+    print("Input source: ", body["source"])
+
+    # Load skills dataset from S3
+    skills_dataset = load_json_from_s3(os.environ['REGISTRY_S3_URI'])
+    standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
+    print("Standardized courses:", len(standardized_course_ids))
+
+    # Load vector embeddings from S3vectors using course_ids
+    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], standardized_course_ids)
+
+    if not course_embeddings:
+        return {
+            "status": 404,
+            "body": "Embeddings not found for any courses"
+        }
+    print("Course embeddings:", len(course_embeddings))
+
+    # Calculate the average vector for the course embeddings
+    transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
+    
+    # Query top k jobs based on the average course embedding
+    top_k_jobs = s3vectors_client.query_vectors(
+        indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
+        topK=10,
+        queryVector= {
+            "float32": transcript_mean_vector.astype(np.float32).tolist()
+        },
+        returnDistance=True
+    )
+    if top_k_jobs['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
+
+    print("Top K jobs retrieved:", top_k_jobs["vectors"])
+
+    # Retrieve job data for the top k jobs
+    top_jobs_data = retrieve_job_data(top_k_jobs["vectors"], skills_dataset)
+
+    # Print the top job Ids in the dataset, as well as their distances
+    print("Top job IDs and distances after skills parse:")
+    for job in top_jobs_data:
+        print(f"Job ID: {job['id']}, Distance: {job['distance']}")
 
     model = "gpt-4.1-nano"
     first_com_skills, first_com_skill_groups = matching_skills(
-        context["student_skill_list"],
-        context["student_skill_groups"],
+        body["student_skill_list"],
+        body["student_skill_groups"],
         top_jobs_data[0]["skills"],
         top_jobs_data[0]["skill_groups"]
     )
     
     for i, top_job_data in enumerate(top_jobs_data):
         com_skills, com_skill_groups = matching_skills(
-            context["student_skill_list"],
-            context["student_skill_groups"],
+            body["student_skill_list"],
+            body["student_skill_groups"],
             top_jobs_data[i]["skills"],
             top_jobs_data[i]["skill_groups"]
         )
@@ -374,7 +405,7 @@ def lambda_handler(event, context):
         top_jobs_data=top_jobs_data,
         com_skills=first_com_skills,
         com_skill_groups=first_com_skill_groups,
-        summary_text=context["summary"]
+        summary_text=body["summary"]
     )
 
     llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, model, client=init_client())["jobs"]
@@ -400,13 +431,16 @@ def lambda_handler(event, context):
                 job["common_skills"] = data_job["common_skills"]
                 job["common_skill_groups"] = data_job["common_skill_groups"]
     
+    highlight = "\n".join([
+        f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}\n"
+        for job_match in llm_result[:3]]
+    )
+
+
     return {
         'status': 200,
         'body': {
             "job_matches": llm_result,
+            "highlight": highlight
         }
     }
-
-
-
-
