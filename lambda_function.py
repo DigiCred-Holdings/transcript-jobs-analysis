@@ -4,17 +4,7 @@ import numpy as np
 from openai import OpenAI
 import os
 
-s3_client = boto3.client('s3')
 s3vectors_client = boto3.client('s3vectors')
-
-def load_json_from_s3(s3_uri):
-    bucket, key = s3_uri.replace("s3://", "").split("/", 1)
-    response = s3_client.get_object(Bucket=bucket, Key=key)
-    if response['ResponseMetadata']['HTTPStatusCode'] != 200:
-        raise Exception(f"Failed to retrieve data from S3: {response['ResponseMetadata']['HTTPStatusCode']}")
-    content = response['Body'].read().decode('utf-8')
-
-    return json.loads(content)
 
 def load_embeddings(index_arn, vector_keys):
     try:
@@ -343,13 +333,11 @@ def lambda_handler(event, context):
     print("Input courses:", len(body["coursesList"]))
     print("Input source: ", body["source"])
 
-    # Load skills dataset from S3
-    skills_dataset = load_json_from_s3(os.environ['REGISTRY_S3_URI'])
-    standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
-    print("Standardized courses:", len(standardized_course_ids))
+    course_ids = get_course_ids(body["coursesList"], body["source"])
+    print("Standardized courses:", len(course_ids))
 
     # Load vector embeddings from S3vectors using course_ids
-    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], standardized_course_ids)
+    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], course_ids)
 
     if not course_embeddings:
         return {
@@ -360,7 +348,7 @@ def lambda_handler(event, context):
 
     # Calculate the average vector for the course embeddings
     transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
-    
+    standardized_standardized_standardized_
     # Query top k jobs based on the average course embedding
     top_k_jobs = s3vectors_client.query_vectors(
         indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
