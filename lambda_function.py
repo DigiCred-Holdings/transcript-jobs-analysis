@@ -5,6 +5,72 @@ from openai import OpenAI
 import os
 
 s3vectors_client = boto3.client('s3vectors')
+athena_client = boto3.client('athena')
+
+
+def build_query(course_title_code_list, school_code):
+    # Build the SQL query to fetch course data based on course titles and codes
+    query = f"""
+    SELECT id, data_title, data_code, data_desc, dse_skills
+    FROM courses
+    WHERE data_src = '{school_code}'
+        AND data_code IN ({', '.join(['?']*len(course_title_code_list))})
+    """
+    return query
+
+
+# Helper function to extract VarCharValue from Athena query result
+def get_var_char_values(d):
+    return [obj['VarCharValue'] for obj in d['Data']]
+
+
+def get_course_ids(course_list, school_name):
+    school_name_code_lookup = {
+        "university of wyoming": "UWYO",
+    }
+    school_code = school_name_code_lookup.get(school_name.lower())    
+    query = build_query(course_title_code_list, school_code)
+    
+    print("Executing query on school code:", school_code)
+    # Start the Athena query execution
+    start_query_response = client.start_query_execution(
+        QueryString=query,
+        QueryExecutionContext={
+            'Database': os.environ['ATHENA_DATABASE']
+        },
+        ResultConfiguration={
+            'OutputLocation': os.environ['ATHENA_OUTPUT_S3']
+        },
+        ExecutionParameters=[code for _, code in course_title_code_list]
+    )
+    print("Query execution started:", start_query_response)
+
+    query_execution_id = start_query_response['QueryExecutionId']
+    
+    # Poll the query status until it completes
+    while True:
+        status_response = client.get_query_execution(QueryExecutionId=query_execution_id)
+        state = status_response['QueryExecution']['Status']['State']
+        reason = status_response['QueryExecution']
+        
+        if state == 'SUCCEEDED':
+            break
+        elif state in ['FAILED', 'CANCELLED']:
+            raise Exception(f"Query {state}: {reason}")
+        
+        time.sleep(0.2)  # Poll every 0.2 seconds
+        
+    results_response = client.get_query_results(QueryExecutionId=query_execution_id)
+    
+    if not results_response or 'ResultSet' not in results_response or 'Rows' not in results_response['ResultSet']:
+        return []
+ 
+    # Unpack the results into a list of dictionaries, using the header row as keys
+    header, *rows = results_response['ResultSet']['Rows']
+    header = get_var_char_values(header)
+    unpacked_results = [dict(zip(header, get_var_char_values(row))) for row in rows]    
+    return unpacked_results
+
 
 def load_embeddings(index_arn, vector_keys):
     try:
@@ -348,7 +414,7 @@ def lambda_handler(event, context):
 
     # Calculate the average vector for the course embeddings
     transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
-    standardized_standardized_standardized_
+ 
     # Query top k jobs based on the average course embedding
     top_k_jobs = s3vectors_client.query_vectors(
         indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
@@ -378,7 +444,7 @@ def lambda_handler(event, context):
         top_jobs_data[0]["skills"],
         top_jobs_data[0]["skill_groups"]
     )
-    
+
     for i, top_job_data in enumerate(top_jobs_data):
         com_skills, com_skill_groups = matching_skills(
             body["student_skill_list"],
