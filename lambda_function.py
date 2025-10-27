@@ -70,7 +70,7 @@ def get_job_data(job_ids):
     query = f"""
     SELECT *
     FROM jobs
-    WHERE id IN ({', '.join(job_ids)})
+    WHERE id IN ({', '.join(['?']*len(job_ids))})
     """
     return query_athena(query, job_ids)
 
