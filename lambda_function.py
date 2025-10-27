@@ -342,14 +342,16 @@ def get_similar_jobs(course_ids):
     print("Course embeddings:", len(course_embeddings))
 
     # Calculate the average vector for the course embeddings
-    transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0).astype(np.float32).tolist()
+    course_mean_vector = np.mean([
+        np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings
+        ], axis=0).astype(np.float32).tolist()
  
     # Query top k jobs based on the average course embedding
     top_k_jobs = s3vectors_client.query_vectors(
         indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
         topK=10,
         queryVector= {
-            "float32": transcript_mean_vector.astype(np.float32).tolist()
+            "float32": course_mean_vector
         },
         returnDistance=True
     )
