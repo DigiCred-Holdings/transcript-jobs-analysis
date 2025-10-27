@@ -391,7 +391,7 @@ def lambda_handler(event, context):
 
     # Find the top job matches given course ids using a vector embedding database
     similar_job_vectors = get_similar_jobs(course_ids)
-    similar_job_ids = [job["id"] for job in similar_job_vectors]
+    similar_job_ids = [job["key"] for job in similar_job_vectors]
     similar_job_data = get_job_data(similar_job_ids)
 
     # Print the top job ids in the dataset, as well as their distances
