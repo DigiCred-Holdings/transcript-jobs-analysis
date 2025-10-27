@@ -390,6 +390,8 @@ def lambda_handler(event, context):
     similar_job_vectors = get_similar_jobs(course_ids)
     similar_job_ids = [job["key"] for job in similar_job_vectors]
     similar_job_data = get_job_data(similar_job_ids)
+    
+    print(f"Full data of similar jobs: {similar_job_data}")
 
     # Generate prompt and result schema information for llm re-rank
     messages, json_schema_wrapper = get_prompt_plus_schema(
