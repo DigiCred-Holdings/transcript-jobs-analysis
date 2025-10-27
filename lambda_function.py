@@ -68,9 +68,9 @@ def get_course_data(course_list, school_name):
 
 def get_job_data(job_ids):
     query = f"""
-    SELECT id, data_title, data_code, data_desc, dse_skills
-    FROM courses
-    WHERE id IN '{', '.join(job_ids)}'
+    SELECT *
+    FROM jobs
+    WHERE id IN '({', '.join(job_ids)})'
     """
     return query_athena(query, job_ids)
 
