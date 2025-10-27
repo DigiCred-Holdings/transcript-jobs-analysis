@@ -89,11 +89,9 @@ def load_embeddings(index_arn, vector_keys):
     
     return vectors['vectors']
 
-def matching_skills(student_skills, student_skill_groups, job_skills, job_skill_groups):
+def matching_skills(student_skills, job_skills):
     common_skills = list(set(student_skills) & set(job_skills))
-    common_skill_groups = list(set(student_skill_groups.keys()) & set(job_skill_groups.keys()))
-    
-    return common_skills, common_skill_groups
+    return common_skills
 
 ### OPENAI API RELATED ###
 
@@ -105,9 +103,10 @@ def init_client():
     api_key = json.loads(secret_string).get('OPENAI_API_KEY')
     return OpenAI(api_key=api_key)
 
-def chatgpt_send_messages_json(messages, json_schema_wrapper, model, client, service_tier="standard"):
+def chatgpt_send_messages_json(messages, json_schema_wrapper, client, service_tier="standard"):
+    llm_model = 'gpt-4.1-nano'
     json_response = client.chat.completions.create(
-        model=model,
+        model=llm_model,
         messages=messages,
         #service_tier=service_tier,  # "priority", "standard", "flex" // Priority only works for gpt-5 and its mini version.
         response_format={
@@ -118,7 +117,7 @@ def chatgpt_send_messages_json(messages, json_schema_wrapper, model, client, ser
                 "schema": json_schema_wrapper["schema"]
             }
         },
-        temperature=1 if "5" in model else 0.2,
+        temperature=1 if "5" in llm_model else 0.2,
         top_p=1.0
     )
     json_response_content = json_response.choices[0].message.content
@@ -137,7 +136,7 @@ def normalize_string_list(items):
             out.append(s)
     return out
 
-def build_final_filter_payload(top_jobs_data, com_skills, com_skill_groups, summary_text):
+def build_final_filter_payload(top_jobs_data, com_skills, summary_text):
     jobs = []
     for j in top_jobs_data or []:
         ja = j.get("job_analysis", {}) or {}
@@ -166,13 +165,12 @@ def build_final_filter_payload(top_jobs_data, com_skills, com_skill_groups, summ
         "student": {
             "summary": (summary_text or "").strip(),
             "skills": normalize_string_list(com_skills or []),
-            "skill_groups": normalize_string_list(com_skill_groups or [])
         },
         "jobs": jobs
     }
     return payload
 
-def get_prompt_plus_schema(top_jobs_data, com_skills, com_skill_groups, summary_text):
+def get_prompt_plus_schema(top_jobs_data, com_skills, summary_text):
     _SYSTEM_PROMPT = """
         You are the “Final Filtering & AI Check” for a job-matching pipeline.
 
@@ -323,7 +321,6 @@ def get_prompt_plus_schema(top_jobs_data, com_skills, com_skill_groups, summary_
     payload = build_final_filter_payload(
         top_jobs_data=top_jobs_data,
         com_skills=com_skills,
-        com_skill_groups=com_skill_groups,
         summary_text=summary_text
     )
     messages = [
@@ -394,37 +391,16 @@ def lambda_handler(event, context):
     similar_job_ids = [job["key"] for job in similar_job_vectors]
     similar_job_data = get_job_data(similar_job_ids)
 
-    # Print the top job ids in the dataset, as well as their distances
-    print("Top job IDs and distances after skills parse:")
-    for job in similar_jobs:
-        print(f"Job ID: {job['id']}, Distance: {job['distance']}")
-
-    model = "gpt-4.1-nano"
-    first_com_skills, first_com_skill_groups = matching_skills(
-        body["student_skill_list"],
-        body["student_skill_groups"],
-        similar_jobs[0]["skills"],
-        similar_jobs[0]["skill_groups"]
-    )
-
-    for i, top_job_data in enumerate(similar_jobs):
-        com_skills, com_skill_groups = matching_skills(
-            body["student_skill_list"],
-            body["student_skill_groups"],
-            similar_jobs[i]["skills"],
-            similar_jobs[i]["skill_groups"]
-        )
-        top_job_data["common_skills"] = com_skills
-        top_job_data["common_skill_groups"] = com_skill_groups
-
+    # Generate prompt and result schema information for llm re-rank
     messages, json_schema_wrapper = get_prompt_plus_schema(
-        top_jobs_data=similar_jobs,
-        com_skills=first_com_skills,
-        com_skill_groups=first_com_skill_groups,
+        top_jobs_data=similar_job_data,
+        com_skills=body["student_skill_list"],
         summary_text=body["summary"]
     )
 
-    llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, model, client=init_client())["jobs"]
+    print(f"llm prompt messages: {messages}")
+
+    llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, client=init_client())["jobs"]
 
     jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
     jobs_sorted = sorted(jobs, key=lambda j: j["compatibility_score_10"], reverse=True)
@@ -435,7 +411,7 @@ def lambda_handler(event, context):
         llm_result = jobs_sorted
 
     for job in llm_result:
-        for data_job in similar_jobs:
+        for data_job in similar_job_data:
             if data_job["id"] == job["id"]:
                 job["url"] = data_job["url"]
                 job["job_analysis"] = {
@@ -443,9 +419,7 @@ def lambda_handler(event, context):
                         if k != "expertise_ranking_justification"
                     }
                 job["skills"] = data_job["skills"]
-                job["skill_groups"] = data_job["skill_groups"]
                 job["common_skills"] = data_job["common_skills"]
-                job["common_skill_groups"] = data_job["common_skill_groups"]
     
     highlight = "\n".join([
         f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}\n"
