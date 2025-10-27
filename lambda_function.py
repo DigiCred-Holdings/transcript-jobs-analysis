@@ -46,10 +46,13 @@ def query_athena(query, params):
     if not results_response or 'ResultSet' not in results_response or 'Rows' not in results_response['ResultSet']:
         return []
  
+    def unpack_athena_row(row):
+        return [obj['VarCharValue'] for obj in row['Data']]
+ 
     # Unpack the results into a list of dictionaries, using the header row as keys
     header, *rows = results_response['ResultSet']['Rows']
-    header = [obj['VarCharValue'] for obj in header['Data']]
-    unpacked_results = [dict(zip(header, get_var_char_values(row))) for row in rows]    
+    unpacked_header = unpack_athena_row(header)
+    unpacked_results = [dict(zip(unpacked_header, unpack_athena_row(row))) for row in rows]    
     return unpacked_results
 
 def get_course_data(course_list, school_name):
