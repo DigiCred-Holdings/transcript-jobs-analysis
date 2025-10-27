@@ -400,8 +400,10 @@ def lambda_handler(event, context):
     print("Input courses:", len(body["coursesList"]))
     print("Input source: ", body["source"])
 
-    course_ids = get_course_ids(body["coursesList"], body["source"])
-    print("Standardized courses:", len(course_ids))
+    course_data = get_course_ids(body["coursesList"], body["source"])
+    course_ids = [course["id"] for course in course_data]
+    print(f"Found {len(course_data)}/{len(body['coursesList'])} courses")
+    print(f"Course Ids: {course_ids}")
 
     # Load vector embeddings from S3vectors using course_ids
     course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], course_ids)
