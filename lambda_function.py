@@ -9,30 +9,11 @@ s3vectors_client = boto3.client('s3vectors')
 athena_client = boto3.client('athena')
 
 
-def build_query(course_title_code_list, school_code):
-    # Build the SQL query to fetch course data based on course titles and codes
-    query = f"""
-    SELECT id, data_title, data_code, data_desc, dse_skills
-    FROM courses
-    WHERE data_src = '{school_code}'
-        AND data_code IN ({', '.join(['?']*len(course_title_code_list))})
-    """
-    return query
-
-
 # Helper function to extract VarCharValue from Athena query result
 def get_var_char_values(d):
     return [obj['VarCharValue'] for obj in d['Data']]
 
-
-def get_course_ids(course_list, school_name):
-    school_name_code_lookup = {
-        "university of wyoming": "UWYO",
-    }
-    school_code = school_name_code_lookup.get(school_name.lower())    
-    query = build_query(course_list, school_code)
-    
-    print("Executing query on school code:", school_code)
+def query_athena(query, params):
     # Start the Athena query execution
     start_query_response = athena_client.start_query_execution(
         QueryString=query,
@@ -42,7 +23,7 @@ def get_course_ids(course_list, school_name):
         ResultConfiguration={
             'OutputLocation': os.environ['ATHENA_OUTPUT_S3']
         },
-        ExecutionParameters=[code for _, code in course_list]
+        ExecutionParameters=params
     )
     print("Query execution started:", start_query_response)
 
@@ -72,6 +53,28 @@ def get_course_ids(course_list, school_name):
     unpacked_results = [dict(zip(header, get_var_char_values(row))) for row in rows]    
     return unpacked_results
 
+def get_course_data(course_list, school_name):
+    school_name_code_lookup = {
+        "university of wyoming": "UWYO",
+    }
+    school_code = school_name_code_lookup.get(school_name.lower())    
+    # Build the SQL query to fetch course data based on course titles and codes
+    query = query = f"""
+    SELECT id, data_title, data_code, data_desc, dse_skills
+    FROM courses
+    WHERE data_src = '{school_code}'
+        AND data_code IN ({', '.join(['?']*len(course_list))})
+    """
+    
+    return query_athena(query, [code for _, code in course_list])
+
+def get_job_data(job_ids):
+    query = f"""
+    SELECT id, data_title, data_code, data_desc, dse_skills
+    FROM courses
+    WHERE id IN '{', '.join(job_ids)}'
+    """
+    return query_athena(query, job_ids)
 
 def load_embeddings(index_arn, vector_keys):
     try:
@@ -374,6 +377,33 @@ def standardize_courses(courses_list, source, sd):
         
     return matches
 
+def get_similar_jobs(course_ids):
+    # Load vector embeddings from course_ids
+    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], course_ids)
+    print("Course embeddings:", len(course_embeddings))
+
+    # Calculate the average vector for the course embeddings
+    transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0).astype(np.float32).tolist()
+ 
+    # Query top k jobs based on the average course embedding
+    top_k_jobs = s3vectors_client.query_vectors(
+        indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
+        topK=10,
+        queryVector= {
+            "float32": transcript_mean_vector.astype(np.float32).tolist()
+        },
+        returnDistance=True
+    )
+    if top_k_jobs['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
+
+    print("Top K jobs retrieved:", top_k_jobs["vectors"])
+
+    # Retrieve job data for the top k jobs
+    top_jobs_data = get_job_data([job["id"] for job in top_k_jobs["vectors"]])
+    
+    return top_jobs_data
+
 from time import perf_counter
 def _timeit(f):
     def wrap(*a, **kw):
@@ -400,66 +430,40 @@ def lambda_handler(event, context):
     print("Input courses:", len(body["coursesList"]))
     print("Input source: ", body["source"])
 
-    course_data = get_course_ids(body["coursesList"], body["source"])
+    # Get course data from backend database, including ids
+    course_data = get_course_data(body["coursesList"], body["source"])
     course_ids = [course["id"] for course in course_data]
     print(f"Found {len(course_data)}/{len(body['coursesList'])} courses")
     print(f"Course Ids: {course_ids}")
 
-    # Load vector embeddings from S3vectors using course_ids
-    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], course_ids)
+    # Find the top job matches given course ids using a vector embedding database
+    similar_jobs = get_similar_jobs()
 
-    if not course_embeddings:
-        return {
-            "status": 404,
-            "body": "Embeddings not found for any courses"
-        }
-    print("Course embeddings:", len(course_embeddings))
-
-    # Calculate the average vector for the course embeddings
-    transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
- 
-    # Query top k jobs based on the average course embedding
-    top_k_jobs = s3vectors_client.query_vectors(
-        indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
-        topK=10,
-        queryVector= {
-            "float32": transcript_mean_vector.astype(np.float32).tolist()
-        },
-        returnDistance=True
-    )
-    if top_k_jobs['ResponseMetadata']['HTTPStatusCode'] != 200:
-        raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
-
-    print("Top K jobs retrieved:", top_k_jobs["vectors"])
-
-    # Retrieve job data for the top k jobs
-    top_jobs_data = retrieve_job_data(top_k_jobs["vectors"], skills_dataset)
-
-    # Print the top job Ids in the dataset, as well as their distances
+    # Print the top job ids in the dataset, as well as their distances
     print("Top job IDs and distances after skills parse:")
-    for job in top_jobs_data:
+    for job in similar_jobs:
         print(f"Job ID: {job['id']}, Distance: {job['distance']}")
 
     model = "gpt-4.1-nano"
     first_com_skills, first_com_skill_groups = matching_skills(
         body["student_skill_list"],
         body["student_skill_groups"],
-        top_jobs_data[0]["skills"],
-        top_jobs_data[0]["skill_groups"]
+        similar_jobs[0]["skills"],
+        similar_jobs[0]["skill_groups"]
     )
 
-    for i, top_job_data in enumerate(top_jobs_data):
+    for i, top_job_data in enumerate(similar_jobs):
         com_skills, com_skill_groups = matching_skills(
             body["student_skill_list"],
             body["student_skill_groups"],
-            top_jobs_data[i]["skills"],
-            top_jobs_data[i]["skill_groups"]
+            similar_jobs[i]["skills"],
+            similar_jobs[i]["skill_groups"]
         )
         top_job_data["common_skills"] = com_skills
         top_job_data["common_skill_groups"] = com_skill_groups
 
     messages, json_schema_wrapper = get_prompt_plus_schema(
-        top_jobs_data=top_jobs_data,
+        top_jobs_data=similar_jobs,
         com_skills=first_com_skills,
         com_skill_groups=first_com_skill_groups,
         summary_text=body["summary"]
@@ -476,7 +480,7 @@ def lambda_handler(event, context):
         llm_result = jobs_sorted
 
     for job in llm_result:
-        for data_job in top_jobs_data:
+        for data_job in similar_jobs:
             if data_job["id"] == job["id"]:
                 job["url"] = data_job["url"]
                 job["job_analysis"] = {
