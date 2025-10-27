@@ -8,10 +8,6 @@ import os
 s3vectors_client = boto3.client('s3vectors')
 athena_client = boto3.client('athena')
 
-# Helper function to extract VarCharValue from Athena query result
-def get_var_char_values(d):
-    return 
-
 def query_athena(query, params):
     # Start the Athena query execution
     start_query_response = athena_client.start_query_execution(
@@ -394,7 +390,8 @@ def lambda_handler(event, context):
     print(f"Course Ids: {course_ids}")
 
     # Find the top job matches given course ids using a vector embedding database
-    similar_job_ids = get_similar_jobs(course_ids)
+    similar_job_vectors = get_similar_jobs(course_ids)
+    similar_job_ids = [job["id"] for job in similar_job_vectors]
     similar_job_data = get_job_data(similar_job_ids)
 
     # Print the top job ids in the dataset, as well as their distances
