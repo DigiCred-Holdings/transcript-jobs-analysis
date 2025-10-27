@@ -1,4 +1,5 @@
 import json
+import time
 import boto3
 import numpy as np
 from openai import OpenAI
@@ -29,11 +30,11 @@ def get_course_ids(course_list, school_name):
         "university of wyoming": "UWYO",
     }
     school_code = school_name_code_lookup.get(school_name.lower())    
-    query = build_query(course_title_code_list, school_code)
+    query = build_query(course_list, school_code)
     
     print("Executing query on school code:", school_code)
     # Start the Athena query execution
-    start_query_response = client.start_query_execution(
+    start_query_response = athena_client.start_query_execution(
         QueryString=query,
         QueryExecutionContext={
             'Database': os.environ['ATHENA_DATABASE']
@@ -41,7 +42,7 @@ def get_course_ids(course_list, school_name):
         ResultConfiguration={
             'OutputLocation': os.environ['ATHENA_OUTPUT_S3']
         },
-        ExecutionParameters=[code for _, code in course_title_code_list]
+        ExecutionParameters=[code for _, code in course_list]
     )
     print("Query execution started:", start_query_response)
 
@@ -49,7 +50,7 @@ def get_course_ids(course_list, school_name):
     
     # Poll the query status until it completes
     while True:
-        status_response = client.get_query_execution(QueryExecutionId=query_execution_id)
+        status_response = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
         state = status_response['QueryExecution']['Status']['State']
         reason = status_response['QueryExecution']
         
@@ -60,7 +61,7 @@ def get_course_ids(course_list, school_name):
         
         time.sleep(0.2)  # Poll every 0.2 seconds
         
-    results_response = client.get_query_results(QueryExecutionId=query_execution_id)
+    results_response = athena_client.get_query_results(QueryExecutionId=query_execution_id)
     
     if not results_response or 'ResultSet' not in results_response or 'Rows' not in results_response['ResultSet']:
         return []
