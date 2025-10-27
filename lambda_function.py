@@ -8,10 +8,9 @@ import os
 s3vectors_client = boto3.client('s3vectors')
 athena_client = boto3.client('athena')
 
-
 # Helper function to extract VarCharValue from Athena query result
 def get_var_char_values(d):
-    return [obj['VarCharValue'] for obj in d['Data']]
+    return 
 
 def query_athena(query, params):
     # Start the Athena query execution
@@ -49,7 +48,7 @@ def query_athena(query, params):
  
     # Unpack the results into a list of dictionaries, using the header row as keys
     header, *rows = results_response['ResultSet']['Rows']
-    header = get_var_char_values(header)
+    header = [obj['VarCharValue'] for obj in header['Data']]
     unpacked_results = [dict(zip(header, get_var_char_values(row))) for row in rows]    
     return unpacked_results
 
@@ -91,31 +90,11 @@ def load_embeddings(index_arn, vector_keys):
     
     return vectors['vectors']
 
-def retrieve_job_data(top_jobs, sd):
-    jobs_data = []
-    # Find the job with matching id/key in the skills dataset
-    for job in top_jobs:
-        job_data = next((j for j in sd["J"] if j["id"] == job["key"]), None)
-        if job_data:
-            jobs_data.append({
-                "id": job_data["id"],
-                "distance": job.get("distance"),
-                "title": job_data["data"].get("title"),
-                "url": job_data["data"].get("url"),
-                "salary": job_data["data"].get("salary"),
-                "job_analysis": job_data.get("josa").get("analysis"),
-                "skills": job_data.get("dse").get("skills"),
-                "skill_groups": job_data.get("dse").get("skill_groups")[0][0]
-            })
-    return jobs_data
-
 def matching_skills(student_skills, student_skill_groups, job_skills, job_skill_groups):
     common_skills = list(set(student_skills) & set(job_skills))
     common_skill_groups = list(set(student_skill_groups.keys()) & set(job_skill_groups.keys()))
     
     return common_skills, common_skill_groups
-
-
 
 ### OPENAI API RELATED ###
 
@@ -354,29 +333,6 @@ def get_prompt_plus_schema(top_jobs_data, com_skills, com_skill_groups, summary_
     ]
     return messages, _JSON_SCHEMA_WRAPPER
 
-def course_codes_match(code1, code2):
-    return str.lower(code1.strip()) == str.lower(code2.strip())
-
-def standardize_courses(courses_list, source, sd):
-    # Find the source abbreviation in the skills dataset
-    for code, alts in sd["lookup"]["universities"].items():
-        if str.lower(source) in [str.lower(alt) for alt in alts]:
-            src_code = code
-            break
-    
-    # Filter the courses based on the source code
-    all_courses = [course for course in sd["C"] if course["data"]["src"] == src_code]
-    matches = []
-    for course in courses_list:
-        # Use the second element in the course list element as the course code
-        course_code = str.lower(course[1])
-        code_matches = [course for course in all_courses if course_codes_match(course["data"]["code"], course_code)]
-        if code_matches:
-            # If a match is found, return the course ID
-            matches.append(code_matches[0]["id"])
-        
-    return matches
-
 def get_similar_jobs(course_ids):
     # Load vector embeddings from course_ids
     course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], course_ids)
@@ -398,11 +354,7 @@ def get_similar_jobs(course_ids):
         raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
 
     print("Top K jobs retrieved:", top_k_jobs["vectors"])
-
-    # Retrieve job data for the top k jobs
-    top_jobs_data = get_job_data([job["id"] for job in top_k_jobs["vectors"]])
-    
-    return top_jobs_data
+    return top_k_jobs["vectors"]
 
 from time import perf_counter
 def _timeit(f):
@@ -437,7 +389,8 @@ def lambda_handler(event, context):
     print(f"Course Ids: {course_ids}")
 
     # Find the top job matches given course ids using a vector embedding database
-    similar_jobs = get_similar_jobs()
+    similar_job_ids = get_similar_jobs(course_ids)
+    similar_job_data = get_job_data(similar_job_ids)
 
     # Print the top job ids in the dataset, as well as their distances
     print("Top job IDs and distances after skills parse:")
