@@ -137,27 +137,27 @@ def normalize_string_list(items):
     return out
 
 def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
-    jobs = []
-    for j in top_jobs_data or []:
-        ja = j.get("josa_analysis", {}) or {}
-        jobs.append({
-            "id": j.get("id", "") or "",
-            "title": j.get("title", "") or "",
+    payload_jobs = []
+    for job in top_jobs_data or []:
+        baked_analysis = json.loads(job.get("josa_analysis", {}))
+        payload_jobs.append({
+            "id": job.get("id", ""),
+            "title": job.get("title", ""),
             "job_analysis": {
-                "summary": ja.get("summary", "") or "",
-                "experience_required": normalize_string_list(ja.get("experience_required")),
-                "experience_preferred": normalize_string_list(ja.get("experience_preferred")),
-                "software_required": normalize_string_list(ja.get("software_required")),
-                "software_preferred": normalize_string_list(ja.get("software_preferred")),
-                "certifications": normalize_string_list(ja.get("certifications")),
-                "education": normalize_string_list(ja.get("education")),
-                "musthaves": normalize_string_list(ja.get("musthaves")),
-                "optional_recommended": normalize_string_list(ja.get("optional_recommended")),
-                "at_glance": normalize_string_list(ja.get("at_glance")),
-                "expertise_ranking": (ja.get("expertise_ranking") or "").strip()
+                "summary": baked_analysis.get("summary", "") or "",
+                "experience_required": normalize_string_list(baked_analysis.get("experience_required")),
+                "experience_preferred": normalize_string_list(baked_analysis.get("experience_preferred")),
+                "software_required": normalize_string_list(baked_analysis.get("software_required")),
+                "software_preferred": normalize_string_list(baked_analysis.get("software_preferred")),
+                "certifications": normalize_string_list(baked_analysis.get("certifications")),
+                "education": normalize_string_list(baked_analysis.get("education")),
+                "musthaves": normalize_string_list(baked_analysis.get("musthaves")),
+                "optional_recommended": normalize_string_list(baked_analysis.get("optional_recommended")),
+                "at_glance": normalize_string_list(baked_analysis.get("at_glance")),
+                "expertise_ranking": (baked_analysis.get("expertise_ranking") or "").strip()
             },
-            "skills": normalize_string_list(j.get("skills")),
-            "skill_groups": j.get("skill_groups", {}) or {}
+            "skills": normalize_string_list(job.get("skills")),
+            "skill_groups": job.get("skill_groups", {}) or {}
         })
 
     payload = {
@@ -166,7 +166,7 @@ def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
             "summary": (summary_text or "").strip(),
             "skills": normalize_string_list(student_skills or []),
         },
-        "jobs": jobs
+        "jobs": payload_jobs
     }
     return payload
 
