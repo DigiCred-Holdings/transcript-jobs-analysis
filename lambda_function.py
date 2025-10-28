@@ -142,7 +142,7 @@ def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
         baked_analysis = json.loads(job.get("josa_analysis", {}))
         payload_jobs.append({
             "id": job.get("id", ""),
-            "title": job.get("title", ""),
+            "title": job.get("data_title", ""),
             "job_analysis": {
                 "summary": baked_analysis.get("summary", "") or "",
                 "experience_required": normalize_string_list(baked_analysis.get("experience_required")),
@@ -154,9 +154,9 @@ def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
                 "musthaves": normalize_string_list(baked_analysis.get("musthaves")),
                 "optional_recommended": normalize_string_list(baked_analysis.get("optional_recommended")),
                 "at_glance": normalize_string_list(baked_analysis.get("at_glance")),
-                "expertise_ranking": (baked_analysis.get("expertise_ranking") or "").strip()
+                "expertise_ranking": (baked_analysis.get("expertise_ranking") or "")
             },
-            "skills": normalize_string_list(job.get("skills")),
+            "skills": normalize_string_list(job.get("dse_skills")),
         })
 
     payload = {
@@ -418,8 +418,8 @@ def lambda_handler(event, context):
                 k: v for k, v in job_full_data["josa_analysis"].items()
                 if k != "expertise_ranking_justification"
             }
-        final_job_output["skills"] = job_full_data["skills"]
-        final_job_output["matching_skills"] = matching_skills(job_full_data["skills"])
+        final_job_output["skills"] = job_full_data["dse_skills"]
+        final_job_output["matching_skills"] = matching_skills(job_full_data["dse_skills"])
 
     highlight = "\n".join([
         f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}\n"
