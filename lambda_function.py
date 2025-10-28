@@ -156,7 +156,7 @@ def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
                 "at_glance": normalize_string_list(baked_analysis.get("at_glance")),
                 "expertise_ranking": (baked_analysis.get("expertise_ranking") or "")
             },
-            "skills": normalize_string_list(job.get("dse_skills")),
+            "skills": job.get("dse_skills"),
         })
 
     payload = {
@@ -419,7 +419,7 @@ def lambda_handler(event, context):
                 if k != "expertise_ranking_justification"
             }
         final_job_output["skills"] = job_full_data["dse_skills"]
-        final_job_output["matching_skills"] = matching_skills(job_full_data["dse_skills"])
+        final_job_output["matching_skills"] = matching_skills(student_skills, job_full_data["dse_skills"])
 
     highlight = "\n".join([
         f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}\n"
