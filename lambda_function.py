@@ -68,7 +68,7 @@ def get_course_data(course_list, school_name):
 
 def get_job_data(job_ids):
     query = f"""
-    SELECT *
+    SELECT id, data_url, CAST(josa_analysis as JSON), skills, title
     FROM jobs
     WHERE id IN ({', '.join(['?']*len(job_ids))})
     """
@@ -157,7 +157,6 @@ def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
                 "expertise_ranking": (baked_analysis.get("expertise_ranking") or "").strip()
             },
             "skills": normalize_string_list(job.get("skills")),
-            "skill_groups": job.get("skill_groups", {}) or {}
         })
 
     payload = {
