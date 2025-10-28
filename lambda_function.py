@@ -68,7 +68,7 @@ def get_course_data(course_list, school_name):
 
 def get_job_data(job_ids):
     query = f"""
-    SELECT id, data_url, CAST(josa_analysis as JSON), skills, title
+    SELECT id, data_title, data_url, dse_skills, CAST(josa_analysis AS JSON) AS josa_analysis
     FROM jobs
     WHERE id IN ({', '.join(['?']*len(job_ids))})
     """
@@ -83,10 +83,10 @@ def load_embeddings(index_arn, vector_keys):
         )
     except Exception as e:
         raise Exception(f"Error retrieving embeddings from S3Vectors: {str(e)}")
-    
+ 
     if vectors['ResponseMetadata']['HTTPStatusCode'] != 200:
         raise Exception(f"Failed to retrieve embeddings from S3Vectors: {vectors['ResponseMetadata']['HTTPStatusCode']}")
-    
+
     return vectors['vectors']
 
 def matching_skills(student_skills, job_skills):
