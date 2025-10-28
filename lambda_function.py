@@ -415,7 +415,7 @@ def lambda_handler(event, context):
         job_full_data = [job for job in similar_job_data if job["id"] == final_job_output["id"]][0]
         final_job_output["url"] = job_full_data["data_url"]
         final_job_output["job_analysis"] = {
-                k: v for k, v in job_full_data["josa_analysis"].items()
+                k: v for k, v in json.loads(job_full_data["josa_analysis"]).items()
                 if k != "expertise_ranking_justification"
             }
         final_job_output["skills"] = job_full_data["dse_skills"]
