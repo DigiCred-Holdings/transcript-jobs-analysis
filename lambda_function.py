@@ -136,10 +136,10 @@ def normalize_string_list(items):
             out.append(s)
     return out
 
-def build_final_filter_payload(top_jobs_data, com_skills, summary_text):
+def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
     jobs = []
     for j in top_jobs_data or []:
-        ja = j.get("job_analysis", {}) or {}
+        ja = j.get("josa_analysis", {}) or {}
         jobs.append({
             "id": j.get("id", "") or "",
             "title": j.get("title", "") or "",
@@ -164,13 +164,13 @@ def build_final_filter_payload(top_jobs_data, com_skills, summary_text):
         "schema_version": "pre-llm-input/v2",
         "student": {
             "summary": (summary_text or "").strip(),
-            "skills": normalize_string_list(com_skills or []),
+            "skills": normalize_string_list(student_skills or []),
         },
         "jobs": jobs
     }
     return payload
 
-def get_prompt_plus_schema(top_jobs_data, com_skills, summary_text):
+def get_prompt_plus_schema(top_jobs_data, student_skills, summary_text):
     _SYSTEM_PROMPT = """
         You are the “Final Filtering & AI Check” for a job-matching pipeline.
 
@@ -320,7 +320,7 @@ def get_prompt_plus_schema(top_jobs_data, com_skills, summary_text):
 
     payload = build_final_filter_payload(
         top_jobs_data=top_jobs_data,
-        com_skills=com_skills,
+        student_skills=student_skills,
         summary_text=summary_text
     )
     messages = [
@@ -376,53 +376,52 @@ def lambda_handler(event, context):
     else:
         body = event["body"]
 
-    print("Course load summary:")
-    print("Input courses:", len(body["coursesList"]))
-    print("Input source: ", body["source"])
+    course_search_list = body["coursesList"]
+    source_region = body["source"]
+    student_skills = body["student_skill_list"]
+    student_summary = body["summary"]
+    
+    print("Input courses:", len(course_search_list))
+    print("Input source: ", source_region)
+
 
     # Get course data from backend database, including ids
-    course_data = get_course_data(body["coursesList"], body["source"])
+    course_data = get_course_data(course_search_list, source_region)
     course_ids = [course["id"] for course in course_data]
-    print(f"Found {len(course_data)}/{len(body['coursesList'])} courses")
+    print(f"Found {len(course_data)}/{len(course_search_list)} courses")
     print(f"Course Ids: {course_ids}")
 
     # Find the top job matches given course ids using a vector embedding database
     similar_job_vectors = get_similar_jobs(course_ids)
     similar_job_ids = [job["key"] for job in similar_job_vectors]
     similar_job_data = get_job_data(similar_job_ids)
-    
+
     print(f"Full data of similar jobs: {similar_job_data}")
 
     # Generate prompt and result schema information for llm re-rank
     messages, json_schema_wrapper = get_prompt_plus_schema(
         top_jobs_data=similar_job_data,
-        com_skills=body["student_skill_list"],
-        summary_text=body["summary"]
+        student_skills=student_skills,
+        summary_text=student_summary
     )
 
     print(f"llm prompt messages: {messages}")
 
     llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, client=init_client())["jobs"]
 
-    jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
-    jobs_sorted = sorted(jobs, key=lambda j: j["compatibility_score_10"], reverse=True)
+    llm_jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
+    final_jobs_result = sorted(llm_jobs, key=lambda elem: elem["compatibility_score_10"], reverse=True)
 
-    if isinstance(llm_result, dict):
-        llm_result["jobs"] = jobs_sorted
-    else:
-        llm_result = jobs_sorted
+    for final_job_output in final_jobs_result:
+        job_full_data = [job for job in similar_job_data if job["id"] == final_job_output["id"]][0]
+        final_job_output["url"] = job_full_data["data_url"]
+        final_job_output["job_analysis"] = {
+                k: v for k, v in job_full_data["josa_analysis"].items()
+                if k != "expertise_ranking_justification"
+            }
+        final_job_output["skills"] = job_full_data["skills"]
+        final_job_output["matching_skills"] = matching_skills(job_full_data["skills"])
 
-    for job in llm_result:
-        for data_job in similar_job_data:
-            if data_job["id"] == job["id"]:
-                job["url"] = data_job["url"]
-                job["job_analysis"] = {
-                        k: v for k, v in data_job["job_analysis"].items()
-                        if k != "expertise_ranking_justification"
-                    }
-                job["skills"] = data_job["skills"]
-                job["common_skills"] = data_job["common_skills"]
-    
     highlight = "\n".join([
         f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}\n"
         for job_match in llm_result[:3]]
