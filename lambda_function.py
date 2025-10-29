@@ -386,7 +386,7 @@ def lambda_handler(event, context):
     # Get course data from backend database, including ids
     course_data = get_course_data(course_search_list, source_region)
     course_ids = [course["id"] for course in course_data]
-    student_skills = [skill for skill in course["dse_skills"] for course in course_data]
+    student_skills = [skill for course in course_data for skill in course["dse_skills"]]
     print(f"Found {len(course_data)}/{len(course_search_list)} courses")
     print(f"Course Ids: {course_ids}")
     print(f"Student skills: {student_skills}")
