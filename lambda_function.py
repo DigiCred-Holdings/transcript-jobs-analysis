@@ -377,7 +377,6 @@ def lambda_handler(event, context):
 
     course_search_list = body["coursesList"]
     source_region = body["source"]
-    student_skills = body["student_skill_list"]
     student_summary = body["summary"]
     
     print("Input courses:", len(course_search_list))
@@ -387,8 +386,10 @@ def lambda_handler(event, context):
     # Get course data from backend database, including ids
     course_data = get_course_data(course_search_list, source_region)
     course_ids = [course["id"] for course in course_data]
+    student_skills = [skill for skill in course["dse_skills"] for course in course_data]
     print(f"Found {len(course_data)}/{len(course_search_list)} courses")
     print(f"Course Ids: {course_ids}")
+    print(f"Student skills: {student_skills}")
 
     # Find the top job matches given course ids using a vector embedding database
     similar_job_vectors = get_similar_jobs(course_ids)
