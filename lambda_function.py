@@ -1,20 +1,78 @@
 import json
+import time
 import boto3
 import numpy as np
 from openai import OpenAI
 import os
 
-s3_client = boto3.client('s3')
 s3vectors_client = boto3.client('s3vectors')
+athena_client = boto3.client('athena')
 
-def load_json_from_s3(s3_uri):
-    bucket, key = s3_uri.replace("s3://", "").split("/", 1)
-    response = s3_client.get_object(Bucket=bucket, Key=key)
-    if response['ResponseMetadata']['HTTPStatusCode'] != 200:
-        raise Exception(f"Failed to retrieve data from S3: {response['ResponseMetadata']['HTTPStatusCode']}")
-    content = response['Body'].read().decode('utf-8')
+def query_athena(query, params):
+    # Start the Athena query execution
+    start_query_response = athena_client.start_query_execution(
+        QueryString=query,
+        QueryExecutionContext={
+            'Database': os.environ['ATHENA_DATABASE']
+        },
+        ResultConfiguration={
+            'OutputLocation': os.environ['ATHENA_OUTPUT_S3']
+        },
+        ExecutionParameters=params
+    )
+    print("Query execution started:", start_query_response)
 
-    return json.loads(content)
+    query_execution_id = start_query_response['QueryExecutionId']
+    
+    # Poll the query status until it completes
+    while True:
+        status_response = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+        state = status_response['QueryExecution']['Status']['State']
+        reason = status_response['QueryExecution']
+        
+        if state == 'SUCCEEDED':
+            break
+        elif state in ['FAILED', 'CANCELLED']:
+            raise Exception(f"Query {state}: {reason}")
+        
+        time.sleep(0.2)  # Poll every 0.2 seconds
+        
+    results_response = athena_client.get_query_results(QueryExecutionId=query_execution_id)
+    
+    if not results_response or 'ResultSet' not in results_response or 'Rows' not in results_response['ResultSet']:
+        return []
+ 
+    def unpack_athena_row(row):
+        return [obj['VarCharValue'] for obj in row['Data']]
+ 
+    # Unpack the results into a list of dictionaries, using the header row as keys
+    header, *rows = results_response['ResultSet']['Rows']
+    unpacked_header = unpack_athena_row(header)
+    unpacked_results = [dict(zip(unpacked_header, unpack_athena_row(row))) for row in rows]    
+    return unpacked_results
+
+def get_course_data(course_list, school_name):
+    school_name_code_lookup = {
+        "university of wyoming": "UWYO",
+    }
+    school_code = school_name_code_lookup.get(school_name.lower())    
+    # Build the SQL query to fetch course data based on course titles and codes
+    query = query = f"""
+    SELECT id, data_title, data_code, data_desc, dse_skills
+    FROM courses
+    WHERE data_src = '{school_code}'
+        AND data_code IN ({', '.join(['?']*len(course_list))})
+    """
+    
+    return query_athena(query, [code for _, code in course_list])
+
+def get_job_data(job_ids):
+    query = f"""
+    SELECT id, data_title, data_url, dse_skills, CAST(josa_analysis AS JSON) AS josa_analysis
+    FROM jobs
+    WHERE id IN ({', '.join(['?']*len(job_ids))})
+    """
+    return query_athena(query, job_ids)
 
 def load_embeddings(index_arn, vector_keys):
     try:
@@ -25,37 +83,15 @@ def load_embeddings(index_arn, vector_keys):
         )
     except Exception as e:
         raise Exception(f"Error retrieving embeddings from S3Vectors: {str(e)}")
-    
+ 
     if vectors['ResponseMetadata']['HTTPStatusCode'] != 200:
         raise Exception(f"Failed to retrieve embeddings from S3Vectors: {vectors['ResponseMetadata']['HTTPStatusCode']}")
-    
+
     return vectors['vectors']
 
-def retrieve_job_data(top_jobs, sd):
-    jobs_data = []
-    # Find the job with matching id/key in the skills dataset
-    for job in top_jobs:
-        job_data = next((j for j in sd["J"] if j["id"] == job["key"]), None)
-        if job_data:
-            jobs_data.append({
-                "id": job_data["id"],
-                "distance": job.get("distance"),
-                "title": job_data["data"].get("title"),
-                "url": job_data["data"].get("url"),
-                "salary": job_data["data"].get("salary"),
-                "job_analysis": job_data.get("josa").get("analysis"),
-                "skills": job_data.get("dse").get("skills"),
-                "skill_groups": job_data.get("dse").get("skill_groups")[0][0]
-            })
-    return jobs_data
-
-def matching_skills(student_skills, student_skill_groups, job_skills, job_skill_groups):
+def matching_skills(student_skills, job_skills):
     common_skills = list(set(student_skills) & set(job_skills))
-    common_skill_groups = list(set(student_skill_groups.keys()) & set(job_skill_groups.keys()))
-    
-    return common_skills, common_skill_groups
-
-
+    return common_skills
 
 ### OPENAI API RELATED ###
 
@@ -67,9 +103,10 @@ def init_client():
     api_key = json.loads(secret_string).get('OPENAI_API_KEY')
     return OpenAI(api_key=api_key)
 
-def chatgpt_send_messages_json(messages, json_schema_wrapper, model, client, service_tier="standard"):
+def chatgpt_send_messages_json(messages, json_schema_wrapper, client, service_tier="standard"):
+    llm_model = 'gpt-4.1-nano'
     json_response = client.chat.completions.create(
-        model=model,
+        model=llm_model,
         messages=messages,
         #service_tier=service_tier,  # "priority", "standard", "flex" // Priority only works for gpt-5 and its mini version.
         response_format={
@@ -80,7 +117,7 @@ def chatgpt_send_messages_json(messages, json_schema_wrapper, model, client, ser
                 "schema": json_schema_wrapper["schema"]
             }
         },
-        temperature=1 if "5" in model else 0.2,
+        temperature=1 if "5" in llm_model else 0.2,
         top_p=1.0
     )
     json_response_content = json_response.choices[0].message.content
@@ -99,42 +136,40 @@ def normalize_string_list(items):
             out.append(s)
     return out
 
-def build_final_filter_payload(top_jobs_data, com_skills, com_skill_groups, summary_text):
-    jobs = []
-    for j in top_jobs_data or []:
-        ja = j.get("job_analysis", {}) or {}
-        jobs.append({
-            "id": j.get("id", "") or "",
-            "title": j.get("title", "") or "",
+def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
+    payload_jobs = []
+    for job in top_jobs_data or []:
+        baked_analysis = json.loads(job.get("josa_analysis", {}))
+        payload_jobs.append({
+            "id": job.get("id", ""),
+            "title": job.get("data_title", ""),
             "job_analysis": {
-                "summary": ja.get("summary", "") or "",
-                "experience_required": normalize_string_list(ja.get("experience_required")),
-                "experience_preferred": normalize_string_list(ja.get("experience_preferred")),
-                "software_required": normalize_string_list(ja.get("software_required")),
-                "software_preferred": normalize_string_list(ja.get("software_preferred")),
-                "certifications": normalize_string_list(ja.get("certifications")),
-                "education": normalize_string_list(ja.get("education")),
-                "musthaves": normalize_string_list(ja.get("musthaves")),
-                "optional_recommended": normalize_string_list(ja.get("optional_recommended")),
-                "at_glance": normalize_string_list(ja.get("at_glance")),
-                "expertise_ranking": (ja.get("expertise_ranking") or "").strip()
+                "summary": baked_analysis.get("summary", "") or "",
+                "experience_required": normalize_string_list(baked_analysis.get("experience_required")),
+                "experience_preferred": normalize_string_list(baked_analysis.get("experience_preferred")),
+                "software_required": normalize_string_list(baked_analysis.get("software_required")),
+                "software_preferred": normalize_string_list(baked_analysis.get("software_preferred")),
+                "certifications": normalize_string_list(baked_analysis.get("certifications")),
+                "education": normalize_string_list(baked_analysis.get("education")),
+                "musthaves": normalize_string_list(baked_analysis.get("musthaves")),
+                "optional_recommended": normalize_string_list(baked_analysis.get("optional_recommended")),
+                "at_glance": normalize_string_list(baked_analysis.get("at_glance")),
+                "expertise_ranking": (baked_analysis.get("expertise_ranking") or "")
             },
-            "skills": normalize_string_list(j.get("skills")),
-            "skill_groups": j.get("skill_groups", {}) or {}
+            "skills": job.get("dse_skills"),
         })
 
     payload = {
         "schema_version": "pre-llm-input/v2",
         "student": {
             "summary": (summary_text or "").strip(),
-            "skills": normalize_string_list(com_skills or []),
-            "skill_groups": normalize_string_list(com_skill_groups or [])
+            "skills": normalize_string_list(student_skills or []),
         },
-        "jobs": jobs
+        "jobs": payload_jobs
     }
     return payload
 
-def get_prompt_plus_schema(top_jobs_data, com_skills, com_skill_groups, summary_text):
+def get_prompt_plus_schema(top_jobs_data, student_skills, summary_text):
     _SYSTEM_PROMPT = """
         You are the “Final Filtering & AI Check” for a job-matching pipeline.
 
@@ -284,8 +319,7 @@ def get_prompt_plus_schema(top_jobs_data, com_skills, com_skill_groups, summary_
 
     payload = build_final_filter_payload(
         top_jobs_data=top_jobs_data,
-        com_skills=com_skills,
-        com_skill_groups=com_skill_groups,
+        student_skills=student_skills,
         summary_text=summary_text
     )
     messages = [
@@ -294,28 +328,30 @@ def get_prompt_plus_schema(top_jobs_data, com_skills, com_skill_groups, summary_
     ]
     return messages, _JSON_SCHEMA_WRAPPER
 
-def course_codes_match(code1, code2):
-    return str.lower(code1.strip()) == str.lower(code2.strip())
+def get_similar_jobs(course_ids):
+    # Load vector embeddings from course_ids
+    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], course_ids)
+    print("Course embeddings:", len(course_embeddings))
 
-def standardize_courses(courses_list, source, sd):
-    # Find the source abbreviation in the skills dataset
-    for code, alts in sd["lookup"]["universities"].items():
-        if str.lower(source) in [str.lower(alt) for alt in alts]:
-            src_code = code
-            break
-    
-    # Filter the courses based on the source code
-    all_courses = [course for course in sd["C"] if course["data"]["src"] == src_code]
-    matches = []
-    for course in courses_list:
-        # Use the second element in the course list element as the course code
-        course_code = str.lower(course[1])
-        code_matches = [course for course in all_courses if course_codes_match(course["data"]["code"], course_code)]
-        if code_matches:
-            # If a match is found, return the course ID
-            matches.append(code_matches[0]["id"])
-        
-    return matches
+    # Calculate the average vector for the course embeddings
+    course_mean_vector = np.mean([
+        np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings
+        ], axis=0).astype(np.float32).tolist()
+ 
+    # Query top k jobs based on the average course embedding
+    top_k_jobs = s3vectors_client.query_vectors(
+        indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
+        topK=10,
+        queryVector= {
+            "float32": course_mean_vector
+        },
+        returnDistance=True
+    )
+    if top_k_jobs['ResponseMetadata']['HTTPStatusCode'] != 200:
+        raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
+
+    print("Top K jobs retrieved:", top_k_jobs["vectors"])
+    return top_k_jobs["vectors"]
 
 from time import perf_counter
 def _timeit(f):
@@ -339,98 +375,52 @@ def lambda_handler(event, context):
     else:
         body = event["body"]
 
-    print("Course load summary:")
-    print("Input courses:", len(body["coursesList"]))
-    print("Input source: ", body["source"])
-
-    # Load skills dataset from S3
-    skills_dataset = load_json_from_s3(os.environ['REGISTRY_S3_URI'])
-    standardized_course_ids = standardize_courses(body["coursesList"], body["source"], skills_dataset)
-    print("Standardized courses:", len(standardized_course_ids))
-
-    # Load vector embeddings from S3vectors using course_ids
-    course_embeddings = load_embeddings(os.environ['COURSE_VECTORS_INDEX_ARN'], standardized_course_ids)
-
-    if not course_embeddings:
-        return {
-            "status": 404,
-            "body": "Embeddings not found for any courses"
-        }
-    print("Course embeddings:", len(course_embeddings))
-
-    # Calculate the average vector for the course embeddings
-    transcript_mean_vector = np.mean([np.array(vec['data']['float32'], dtype=float) for vec in course_embeddings], axis=0)
+    course_search_list = body["coursesList"]
+    source_region = body["source"]
+    student_skills = body["student_skill_list"]
+    student_summary = body["summary"]
     
-    # Query top k jobs based on the average course embedding
-    top_k_jobs = s3vectors_client.query_vectors(
-        indexArn=os.environ['JOB_VECTORS_INDEX_ARN'],
-        topK=10,
-        queryVector= {
-            "float32": transcript_mean_vector.astype(np.float32).tolist()
-        },
-        returnDistance=True
-    )
-    if top_k_jobs['ResponseMetadata']['HTTPStatusCode'] != 200:
-        raise Exception(f"Failed to query embeddings from S3Vectors: {top_k_jobs['ResponseMetadata']['HTTPStatusCode']}")
+    print("Input courses:", len(course_search_list))
+    print("Input source: ", source_region)
 
-    print("Top K jobs retrieved:", top_k_jobs["vectors"])
 
-    # Retrieve job data for the top k jobs
-    top_jobs_data = retrieve_job_data(top_k_jobs["vectors"], skills_dataset)
+    # Get course data from backend database, including ids
+    course_data = get_course_data(course_search_list, source_region)
+    course_ids = [course["id"] for course in course_data]
+    print(f"Found {len(course_data)}/{len(course_search_list)} courses")
+    print(f"Course Ids: {course_ids}")
 
-    # Print the top job Ids in the dataset, as well as their distances
-    print("Top job IDs and distances after skills parse:")
-    for job in top_jobs_data:
-        print(f"Job ID: {job['id']}, Distance: {job['distance']}")
+    # Find the top job matches given course ids using a vector embedding database
+    similar_job_vectors = get_similar_jobs(course_ids)
+    similar_job_ids = [job["key"] for job in similar_job_vectors]
+    similar_job_data = get_job_data(similar_job_ids)
 
-    model = "gpt-4.1-nano"
-    first_com_skills, first_com_skill_groups = matching_skills(
-        body["student_skill_list"],
-        body["student_skill_groups"],
-        top_jobs_data[0]["skills"],
-        top_jobs_data[0]["skill_groups"]
-    )
-    
-    for i, top_job_data in enumerate(top_jobs_data):
-        com_skills, com_skill_groups = matching_skills(
-            body["student_skill_list"],
-            body["student_skill_groups"],
-            top_jobs_data[i]["skills"],
-            top_jobs_data[i]["skill_groups"]
-        )
-        top_job_data["common_skills"] = com_skills
-        top_job_data["common_skill_groups"] = com_skill_groups
+    print(f"Full data of similar jobs: {similar_job_data}")
 
+    # Generate prompt and result schema information for llm re-rank
     messages, json_schema_wrapper = get_prompt_plus_schema(
-        top_jobs_data=top_jobs_data,
-        com_skills=first_com_skills,
-        com_skill_groups=first_com_skill_groups,
-        summary_text=body["summary"]
+        top_jobs_data=similar_job_data,
+        student_skills=student_skills,
+        summary_text=student_summary
     )
 
-    llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, model, client=init_client())["jobs"]
+    print(f"llm prompt messages: {messages}")
 
-    jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
-    jobs_sorted = sorted(jobs, key=lambda j: j["compatibility_score_10"], reverse=True)
+    llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, client=init_client())["jobs"]
 
-    if isinstance(llm_result, dict):
-        llm_result["jobs"] = jobs_sorted
-    else:
-        llm_result = jobs_sorted
+    llm_jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
+    final_jobs_result = sorted(llm_jobs, key=lambda elem: elem["compatibility_score_10"], reverse=True)
 
-    for job in llm_result:
-        for data_job in top_jobs_data:
-            if data_job["id"] == job["id"]:
-                job["url"] = data_job["url"]
-                job["job_analysis"] = {
-                        k: v for k, v in data_job["job_analysis"].items()
-                        if k != "expertise_ranking_justification"
-                    }
-                job["skills"] = data_job["skills"]
-                job["skill_groups"] = data_job["skill_groups"]
-                job["common_skills"] = data_job["common_skills"]
-                job["common_skill_groups"] = data_job["common_skill_groups"]
-    
+    for final_job_output in final_jobs_result:
+        job_full_data = [job for job in similar_job_data if job["id"] == final_job_output["id"]][0]
+        final_job_output["url"] = job_full_data["data_url"]
+        final_job_output["job_analysis"] = {
+                k: v for k, v in json.loads(job_full_data["josa_analysis"]).items()
+                if k != "expertise_ranking_justification"
+            }
+        final_job_output["skills"] = job_full_data["dse_skills"]
+        final_job_output["matching_skills"] = matching_skills(student_skills, job_full_data["dse_skills"])
+
     highlight = "\n".join([
         f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}\n"
         for job_match in llm_result[:3]]
