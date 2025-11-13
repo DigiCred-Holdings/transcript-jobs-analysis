@@ -8,6 +8,15 @@ s3vectors_client = boto3.client('s3vectors')
 athena_client = boto3.client('athena')
 bedrock_client = boto3.client('bedrock-runtime')
 
+from time import perf_counter
+def _timeit(f):
+    def wrap(*a, **kw):
+        t=perf_counter(); r=f(*a, **kw)
+        print(f"{f.__name__} took {(perf_counter()-t)*1000:.3f} ms")
+        return r
+    return wrap
+
+@_timeit
 def query_athena(query, params):
     # Start the Athena query execution
     start_query_response = athena_client.start_query_execution(
@@ -145,6 +154,7 @@ def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
     }
     return payload
 
+@_timeit
 def invoke_bedrock_model(top_jobs_data, student_skills, summary_text):
     SYSTEM_PROMPT = """
         You are the “Final Filtering & AI Check” for a job-matching pipeline.
@@ -356,14 +366,6 @@ def get_similar_jobs(course_ids):
 
     print("Top K jobs retrieved:", top_k_jobs["vectors"])
     return top_k_jobs["vectors"]
-
-from time import perf_counter
-def _timeit(f):
-    def wrap(*a, **kw):
-        t=perf_counter(); r=f(*a, **kw)
-        print(f"{f.__name__} took {(perf_counter()-t)*1000:.3f} ms")
-        return r
-    return wrap
 
 @_timeit
 def lambda_handler(event, context):
