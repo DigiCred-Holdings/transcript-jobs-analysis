@@ -2,11 +2,11 @@ import json
 import time
 import boto3
 import numpy as np
-from openai import OpenAI
 import os
 
 s3vectors_client = boto3.client('s3vectors')
 athena_client = boto3.client('athena')
+bedrock_client = boto3.client('bedrock-runtime')
 
 def query_athena(query, params):
     # Start the Athena query execution
@@ -51,6 +51,7 @@ def query_athena(query, params):
     unpacked_results = [dict(zip(unpacked_header, unpack_athena_row(row))) for row in rows]    
     return unpacked_results
 
+
 def get_course_data(course_list, school_name):
     school_name_code_lookup = {
         "university of wyoming": "UWYO",
@@ -66,6 +67,7 @@ def get_course_data(course_list, school_name):
     
     return query_athena(query, [code for _, code in course_list])
 
+
 def get_job_data(job_ids):
     query = f"""
     SELECT id, data_title, data_url, dse_skills, CAST(josa_analysis AS JSON) AS josa_analysis
@@ -73,6 +75,7 @@ def get_job_data(job_ids):
     WHERE id IN ({', '.join(['?']*len(job_ids))})
     """
     return query_athena(query, job_ids)
+
 
 def load_embeddings(index_arn, vector_keys):
     try:
@@ -89,39 +92,11 @@ def load_embeddings(index_arn, vector_keys):
 
     return vectors['vectors']
 
+
 def matching_skills(student_skills, job_skills):
     common_skills = list(set(student_skills) & set(job_skills))
     return common_skills
 
-### OPENAI API RELATED ###
-
-def init_client():
-    # Get OpenAI key from aws secrets manager and return OpenAI client
-    secrets_client = boto3.client('secretsmanager')
-    secret_response = secrets_client.get_secret_value(SecretId=os.environ['OPENAI_API_KEY_SECRET'])
-    secret_string = secret_response['SecretString']
-    api_key = json.loads(secret_string).get('OPENAI_API_KEY')
-    return OpenAI(api_key=api_key)
-
-def chatgpt_send_messages_json(messages, json_schema_wrapper, client, service_tier="standard"):
-    llm_model = 'gpt-4.1-nano'
-    json_response = client.chat.completions.create(
-        model=llm_model,
-        messages=messages,
-        #service_tier=service_tier,  # "priority", "standard", "flex" // Priority only works for gpt-5 and its mini version.
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": json_schema_wrapper["name"],
-                "strict": True,
-                "schema": json_schema_wrapper["schema"]
-            }
-        },
-        temperature=1 if "5" in llm_model else 0.2,
-        top_p=1.0
-    )
-    json_response_content = json_response.choices[0].message.content
-    return json.loads(json_response_content)
 
 def normalize_string_list(items):
     if not items:
@@ -135,6 +110,7 @@ def normalize_string_list(items):
             seen.add(low)
             out.append(s)
     return out
+
 
 def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
     payload_jobs = []
@@ -169,8 +145,8 @@ def build_final_filter_payload(top_jobs_data, student_skills, summary_text):
     }
     return payload
 
-def get_prompt_plus_schema(top_jobs_data, student_skills, summary_text):
-    _SYSTEM_PROMPT = """
+def invoke_bedrock_model(top_jobs_data, student_skills, summary_text):
+    SYSTEM_PROMPT = """
         You are the “Final Filtering & AI Check” for a job-matching pipeline.
 
         VOICE & STYLE
@@ -279,40 +255,45 @@ def get_prompt_plus_schema(top_jobs_data, student_skills, summary_text):
         Return ONLY a JSON object that validates against the provided JSON Schema.
     """
 
-    _JSON_SCHEMA_WRAPPER = {
-        "name": "final_filter_v2_response",
-        "schema": {
-            "$schema": "https://json-schema.org/draft/2020-12/schema#",
-            "title": "Final Filtering & AI Check Output v2",
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["schema_version", "jobs", "warnings", "errors"],
-            "properties": {
-                "schema_version": {"type": "string", "const": "final-filter/v2"},
-                "jobs": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["id", "title", "justification", "next_steps", "compatibility_score_10"],
-                        "properties": {
-                            "id": {"type": "string", "minLength": 1},
-                            "title": {"type": "string", "minLength": 1},
-                            "justification": {"type": "string", "minLength": 10, "maxLength": 200},
-                            "next_steps": {"type": "string", "minLength": 30, "maxLength": 480},
-                            "compatibility_score_10": {
-                                "type": "number",
-                                "minimum": 0,
-                                "maximum": 10,
-                                "multipleOf": 0.1,
-                                "description": "Deterministic score per rubric; number with one decimal (multiple of 0.1) in range 0.0–10.0."
+    JSON_SCHEMA_TOOL = {
+        "toolSpec": {
+            "name": "final_filter_v2_response",
+            "description": "Enforces the exact response schema",
+            "inputSchema": {
+                "json": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema#",
+                    "title": "Final Filtering & AI Check Output v2",
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["schema_version", "jobs", "warnings", "errors"],
+                    "properties": {
+                        "schema_version": {"type": "string", "const": "final-filter/v2"},
+                        "jobs": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["id", "title", "justification", "next_steps", "compatibility_score_10"],
+                                "properties": {
+                                    "id": {"type": "string", "minLength": 1},
+                                    "title": {"type": "string", "minLength": 1},
+                                    "justification": {"type": "string", "minLength": 10, "maxLength": 200},
+                                    "next_steps": {"type": "string", "minLength": 30, "maxLength": 480},
+                                    "compatibility_score_10": {
+                                        "type": "number",
+                                        "minimum": 0,
+                                        "maximum": 10,
+                                        "multipleOf": 0.1,
+                                        "description": "Deterministic score per rubric; number with one decimal (multiple of 0.1) in range 0.0–10.0."
+                                    }
+                                }
                             }
-                        }
+                        },
+                        "warnings": {"type": "array", "items": {"type": "string"}},
+                        "errors": {"type": "array", "items": {"type": "string"}}
                     }
-                },
-                "warnings": {"type": "array", "items": {"type": "string"}},
-                "errors": {"type": "array", "items": {"type": "string"}}
+                }
             }
         }
     }
@@ -322,11 +303,34 @@ def get_prompt_plus_schema(top_jobs_data, student_skills, summary_text):
         student_skills=student_skills,
         summary_text=summary_text
     )
-    messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
-    ]
-    return messages, _JSON_SCHEMA_WRAPPER
+
+    client = boto3.client("bedrock-runtime")
+    response = client.converse(
+        modelId="amazon.nova-micro-v1:0",
+        messages=[
+            {
+                "role": "user",
+                "content": [{"text": json.dumps(payload, ensure_ascii=False)}]
+            }
+        ],
+        system=[{"text": SYSTEM_PROMPT}],
+        inferenceConfig={"maxTokens": 2000, "temperature": 0.0},
+        toolConfig={
+            "tools": [JSON_SCHEMA_TOOL],
+            "toolChoice": {"tool": {"name": "final_filter_v2_response"}}
+        }
+    )
+    
+    print("Bedrock converse response: ", response)
+
+    # Extract the tool-use argument
+    for content in response["output"]["message"]["content"]:
+        if "toolUse" in content:
+            return content["toolUse"]["input"]
+
+    # Fallback (should not happen)
+    return {"schema_version":"final-filter/v2","jobs":[],"warnings":[],"errors":["No toolUse block returned"]}
+
 
 def get_similar_jobs(course_ids):
     # Load vector embeddings from course_ids
@@ -399,15 +403,11 @@ def lambda_handler(event, context):
     print(f"Full data of similar jobs: {similar_job_data}")
 
     # Generate prompt and result schema information for llm re-rank
-    messages, json_schema_wrapper = get_prompt_plus_schema(
+    llm_result = invoke_bedrock_model(
         top_jobs_data=similar_job_data,
         student_skills=student_skills,
         summary_text=student_summary
     )
-
-    print(f"llm prompt messages: {messages}")
-
-    llm_result = chatgpt_send_messages_json(messages, json_schema_wrapper, client=init_client())["jobs"]
 
     llm_jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
     final_jobs_result = sorted(llm_jobs, key=lambda elem: elem["compatibility_score_10"], reverse=True)
