@@ -331,8 +331,6 @@ def invoke_bedrock_model(top_jobs_data, student_skills, summary_text):
         }
     )
     
-    print("Bedrock converse response: ", response)
-
     # Extract the tool-use argument
     for content in response["output"]["message"]["content"]:
         if "toolUse" in content:
@@ -411,8 +409,8 @@ def lambda_handler(event, context):
         summary_text=student_summary
     )
 
-    llm_jobs = llm_result["jobs"] if isinstance(llm_result, dict) and "jobs" in llm_result else llm_result
-    final_jobs_result = sorted(llm_jobs, key=lambda elem: elem["compatibility_score_10"], reverse=True)
+    llm_jobs = llm_result["jobs"]
+    final_jobs_result = sorted(llm_jobs, key=lambda elem: elem["compatibility_score_10"], reverse=True)[:3]
 
     for final_job_output in final_jobs_result:
         job_full_data = [job for job in similar_job_data if job["id"] == final_job_output["id"]][0]
@@ -426,7 +424,7 @@ def lambda_handler(event, context):
 
     highlight = "\n".join([
         f"{job_match["title"]}\n{job_match["justification"]}\nCompatibility: {job_match["compatibility_score_10"]}\n"
-        for job_match in llm_result[:3]]
+        for job_match in final_jobs_result]
     )
 
 
